@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Sentinelle">
+<meta name="theme-color" content="#0f1316">
+<title>Sentinelle Trémie</title>
+<link rel="apple-touch-icon" id="touchIcon" href="">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap">
+<style>
+/* Poste de contrôle machine : écran sombre, bandeau d'état en haut, image caméra au centre, grosses commandes en bas */
+:root{
+  --bg:#0f1316; --panel:#182026; --line:#2a353e; --fg:#e9eef2; --mut:#8d9aa6;
+  --ok:#2ec27e; --warn:#f5a524; --bad:#ef3b36; --sig:#ffd23f;
+  --f-disp:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;
+  --f-body:"Barlow",system-ui,-apple-system,sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:16px/1.4 var(--f-body);-webkit-user-select:none;user-select:none;overflow:hidden;-webkit-tap-highlight-color:transparent}
+[hidden]{display:none!important}
+.app{height:100%;display:grid;grid-template-rows:auto 1fr auto;
+  padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding-block:10px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  border-bottom:1px solid var(--line)}
+.brand{font:700 20px/1 var(--f-disp);letter-spacing:.04em;text-transform:uppercase}
+.brand small{display:block;font:500 12px/1.3 var(--f-mono);color:var(--mut);letter-spacing:0;text-transform:none;margin-top:3px}
+.pill{font:700 15px/1 var(--f-disp);letter-spacing:.08em;text-transform:uppercase;padding:9px 12px;border-radius:4px;
+  background:var(--panel);color:var(--mut);border:1px solid var(--line);white-space:nowrap}
+.pill[data-s="watch"]{background:var(--ok);color:#06150d;border-color:var(--ok)}
+.pill[data-s="pause"],.pill[data-s="calib"],.pill[data-s="draw"]{background:var(--warn);color:#1d1300;border-color:var(--warn)}
+.pill[data-s="alarm"]{background:var(--bad);color:#fff;border-color:var(--bad)}
+.stage{position:relative;background:#000;min-height:0;overflow:hidden}
+video,#overlay{position:absolute;inset:0;width:100%;height:100%}
+video{object-fit:contain}
+#overlay{touch-action:none}
+.intro{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:20px;overflow:auto}
+.intro-card{max-width:420px;width:100%;display:grid;gap:14px}
+.intro h1{font:700 30px/1.05 var(--f-disp);text-transform:uppercase;letter-spacing:.02em;margin:0;text-wrap:balance}
+.intro p{margin:0;color:var(--mut)}
+.intro ol{margin:0;padding:0;list-style:none;display:grid;gap:8px;counter-reset:s}
+.intro li{counter-increment:s;display:grid;grid-template-columns:30px 1fr;gap:10px;align-items:start}
+.intro li::before{content:counter(s);font:700 18px/30px var(--f-disp);text-align:center;background:var(--panel);border:1px solid var(--line);border-radius:4px;color:var(--sig)}
+.err{color:var(--warn)!important}
+.stats{position:absolute;left:8px;bottom:8px;right:8px;display:flex;flex-wrap:wrap;gap:6px;pointer-events:none}
+.stats span{font:500 12px/1 var(--f-mono);background:rgba(15,19,22,.78);color:var(--fg);padding:6px 8px;border-radius:3px;font-variant-numeric:tabular-nums}
+.banner{position:absolute;top:8px;left:8px;right:8px;background:var(--warn);color:#1d1300;padding:10px 12px;border-radius:4px;font-weight:600;display:flex;gap:10px;align-items:center;justify-content:space-between}
+.banner button{background:#1d1300;color:var(--warn);border:0;border-radius:3px;padding:8px 10px;font:700 14px var(--f-disp);text-transform:uppercase}
+footer{padding-block:10px;padding-left:max(12px,env(safe-area-inset-left,0px));padding-right:max(12px,env(safe-area-inset-right,0px));
+  border-top:1px solid var(--line);display:grid;gap:8px}
+.row{display:grid;gap:8px;grid-template-columns:repeat(3,1fr)}
+.row.small{grid-template-columns:repeat(4,1fr)}
+button{font:700 17px/1.1 var(--f-disp);letter-spacing:.05em;text-transform:uppercase;color:var(--fg);background:var(--panel);
+  border:1px solid var(--line);border-radius:6px;min-height:56px;padding:6px 8px;cursor:pointer}
+button:focus-visible{outline:3px solid var(--sig);outline-offset:2px}
+button:active{transform:translateY(1px)}
+button:disabled{opacity:.4}
+.row.small button{min-height:46px;font-size:14px}
+.go{background:var(--ok);color:#06150d;border-color:var(--ok);font-size:20px}
+.go.stop{background:var(--bad);color:#fff;border-color:var(--bad)}
+.primary{background:var(--sig);color:#1a1500;border-color:var(--sig)}
+@media (orientation:landscape) and (max-height:560px){
+  .app{grid-template-columns:1fr 300px;grid-template-rows:auto 1fr}
+  header{grid-column:1/-1}
+  footer{border-top:0;border-left:1px solid var(--line);align-content:center;overflow:auto}
+  .row{grid-template-columns:1fr 1fr}
+  .row.small{grid-template-columns:1fr 1fr}
+}
+/* Alarme plein écran */
+.alarm{position:fixed;inset:0;z-index:50;background:var(--bad);display:flex;flex-direction:column;gap:14px;
+  padding:calc(16px + env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) calc(16px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px));
+  animation:blink .5s steps(1) infinite}
+@keyframes blink{50%{background:#7a0f0c}}
+@media (prefers-reduced-motion:reduce){.alarm{animation:none}}
+.alarm h2{margin:0;font:700 clamp(34px,10vw,64px)/.95 var(--f-disp);text-transform:uppercase;color:#fff}
+.alarm p{margin:0;color:#fff;font-weight:600}
+.alarm .shot{flex:1;min-height:0;display:flex;align-items:center;justify-content:center}
+.alarm img{max-height:100%;max-width:100%;border:3px solid #fff;border-radius:4px;background:#000}
+.ackbtn{min-height:96px;font-size:34px;background:#fff;color:var(--bad);border:0}
+/* Panneaux */
+.sheet{position:fixed;inset:0;z-index:40;background:var(--bg);display:flex;flex-direction:column;
+  padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+.sheet-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding-block:10px;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));border-bottom:1px solid var(--line)}
+.sheet-head h2{margin:0;font:700 24px/1 var(--f-disp);text-transform:uppercase;letter-spacing:.03em}
+.sheet-head button{min-height:44px}
+.sheet-body{overflow:auto;padding-block:16px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:18px;align-content:start}
+.field{display:grid;gap:6px}
+.field label{display:flex;justify-content:space-between;gap:10px;font-weight:600}
+.field output{font:500 15px var(--f-mono);color:var(--sig);font-variant-numeric:tabular-nums}
+.field small{color:var(--mut)}
+input[type=range]{width:100%;accent-color:var(--sig);height:32px}
+.seg{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.seg button[aria-pressed="true"]{background:var(--sig);color:#1a1500;border-color:var(--sig)}
+.hist{display:grid;gap:10px}
+.hitem{display:grid;grid-template-columns:110px 1fr;gap:12px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px}
+.hitem img{width:110px;border-radius:3px;display:block}
+.hitem b{font:700 18px/1.1 var(--f-disp);text-transform:uppercase;display:block}
+.hitem span{color:var(--mut);font-size:14px;display:block;font-variant-numeric:tabular-nums}
+.empty{color:var(--mut);text-align:center;padding:30px 0}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(150px + env(safe-area-inset-bottom,0px));z-index:60;
+  background:var(--fg);color:var(--bg);padding:12px 16px;border-radius:6px;font-weight:600;max-width:calc(100% - 32px);text-align:center}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand">Sentinelle Trémie<small id="sub">Focke 350 · Ligne LU 44</small></div>
+    <div class="pill" id="pill" data-s="off">Caméra éteinte</div>
+  </header>
+
+  <main class="stage" id="stage">
+    <video id="video" playsinline muted autoplay></video>
+    <canvas id="overlay"></canvas>
+    <div class="intro" id="intro">
+      <div class="intro-card">
+        <h1>Surveillance de la trémie</h1>
+        <p>L'iPhone filme la trémie et sonne dès qu'une cigarette sort de l'alignement.</p>
+        <ol>
+          <li>Fixez l'iPhone face à la trémie, bien stable, sans gêner la machine.</li>
+          <li>Allumez la caméra et tracez au doigt la zone à surveiller.</li>
+          <li>Calibrez quand la trémie est normale (cigarettes bien rangées).</li>
+          <li>Lancez la surveillance et laissez l'écran ouvert.</li>
+        </ol>
+        <p id="camErr" class="err" hidden></p>
+        <button class="primary" id="btnCam">Allumer la caméra</button>
+      </div>
+    </div>
+    <div class="banner" id="banner" hidden><span id="bannerTxt"></span><button id="bannerOk">OK</button></div>
+    <div class="stats" id="stats" hidden></div>
+  </main>
+
+  <footer>
+    <div class="row">
+      <button id="btnZone" disabled>Zone</button>
+      <button id="btnCalib" disabled>Calibrer</button>
+      <button id="btnGo" class="go" disabled>Surveiller</button>
+    </div>
+    <div class="row small">
+      <button id="btnPause" disabled>Pause 1 min</button>
+      <button id="btnTest">Test alarme</button>
+      <button id="btnHist">Historique</button>
+      <button id="btnSet">Réglages</button>
+    </div>
+  </footer>
+</div>
+
+<section class="alarm" id="alarm" hidden role="alertdialog" aria-labelledby="alarmTitle">
+  <h2 id="alarmTitle">Cigarette mal positionnée</h2>
+  <p id="alarmInfo"></p>
+  <div class="shot"><img id="alarmImg" alt="Image de la trémie au moment de l'alarme"></div>
+  <button class="ackbtn" id="btnAck">Acquitter</button>
+</section>
+
+<section class="sheet" id="sheetSet" hidden>
+  <div class="sheet-head"><h2>Réglages</h2><button data-close="sheetSet">Fermer</button></div>
+  <div class="sheet-body" id="setBody"></div>
+</section>
+
+<section class="sheet" id="sheetHist" hidden>
+  <div class="sheet-head"><h2>Historique</h2><button data-close="sheetHist">Fermer</button></div>
+  <div class="sheet-body">
+    <div class="row" style="grid-template-columns:1fr 1fr">
+      <button id="btnCsv">Exporter CSV</button>
+      <button id="btnClear">Effacer</button>
+    </div>
+    <div class="hist" id="hist"></div>
+  </div>
+</section>
+
+<div class="toast" id="toast" hidden></div>
+
+<script>
+(function(){
+'use strict';
+const $=s=>document.querySelector(s);
+const video=$('#video'), ov=$('#overlay'), octx=ov.getContext('2d'), stage=$('#stage');
+const work=document.createElement('canvas'), wctx=work.getContext('2d',{willReadFrequently:true});
+const css=getComputedStyle(document.documentElement);
+const C={ok:css.getPropertyValue('--ok').trim(),warn:css.getPropertyValue('--warn').trim(),bad:css.getPropertyValue('--bad').trim(),sig:css.getPropertyValue('--sig').trim()};
+
+/* ---------- Stockage ---------- */
+function load(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}}
+function save(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
+const DEF={angle:15,persist:8,minCells:1,cohDrop:55,cols:12,rows:8,rearm:10,volume:90,sound:'sirene'};
+let settings=Object.assign({},DEF,load('st_settings',{}));
+let roi=load('st_roi',null);
+let ref=load('st_ref',null);
+let hist=load('st_hist',[]);
+
+/* ---------- État ---------- */
+let stream=null, mode='off', running=false;
+let pauseUntil=0, rearmUntil=0, hits=null, flags=null, last=null, cal=null, draft=null, dragStart=null;
+let loopT=null, frames=0, fpsT=performance.now(), fps=0, hiddenAt=0;
+
+const shiftOf=d=>{const h=d.getHours();return (h>=7&&h<19)?'A':'C'};
+const pad=n=>String(n).padStart(2,'0');
+const fmtT=d=>pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds());
+const fmtD=d=>pad(d.getDate())+'/'+pad(d.getMonth()+1)+'/'+d.getFullYear();
+
+function toast(msg,ms){const t=$('#toast');t.textContent=msg;t.hidden=false;clearTimeout(toast._t);toast._t=setTimeout(()=>{t.hidden=true},ms||2800)}
+function banner(msg){$('#bannerTxt').textContent=msg;$('#banner').hidden=false}
+$('#bannerOk').onclick=()=>{$('#banner').hidden=true};
+
+/* ---------- Caméra ---------- */
+async function startCamera(){
+  const err=$('#camErr'); err.hidden=true;
+  if(!window.isSecureContext||!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    err.textContent="La caméra n'est accessible que si la page est ouverte dans Safari depuis une adresse https://.";err.hidden=false;return;
+  }
+  try{
+    if(stream) stream.getTracks().forEach(t=>t.stop());
+    stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}}});
+    video.srcObject=stream; await video.play().catch(()=>{});
+    $('#intro').hidden=true; $('#stats').hidden=false;
+    if(!roi){roi={x:.1,y:.15,w:.8,h:.7};save('st_roi',roi)}
+    mode='ready'; ensureAudio(); updateUI();
+    if(!ref) toast('Tracez la zone de la trémie, puis calibrez.');
+    clearTimeout(loopT); tick();
+  }catch(e){
+    err.textContent=(e&&e.name==='NotAllowedError')?"Accès à la caméra refusé. Réglages iPhone › Safari › Caméra › Autoriser, puis rechargez la page.":"Impossible d'ouvrir la caméra ("+(e&&e.name||'erreur')+").";
+    err.hidden=false;
+  }
+}
+$('#btnCam').onclick=startCamera;
+
+/* ---------- Géométrie ---------- */
+function contentRect(){
+  const W=stage.clientWidth,H=stage.clientHeight,vw=video.videoWidth||16,vh=video.videoHeight||9;
+  const s=Math.min(W/vw,H/vh),w=vw*s,h=vh*s;return {x:(W-w)/2,y:(H-h)/2,w:w,h:h};
+}
+function toNorm(e){
+  const b=ov.getBoundingClientRect(),cr=contentRect();
+  return {x:Math.min(1,Math.max(0,(e.clientX-b.left-cr.x)/cr.w)),y:Math.min(1,Math.max(0,(e.clientY-b.top-cr.y)/cr.h))};
+}
+
+/* ---------- Analyse d'image (tenseur de structure par case) ---------- */
+const AW=192; let gcache={w:0,h:0,cols:0,rows:0,cx:null,cy:null};
+function grab(){
+  const vw=video.videoWidth,vh=video.videoHeight; if(!vw||!vh||!roi) return null;
+  const sx=roi.x*vw,sy=roi.y*vh,sw=Math.max(8,roi.w*vw),sh=Math.max(8,roi.h*vh);
+  const w=AW,h=Math.max(24,Math.min(256,Math.round(AW*sh/sw)));
+  if(work.width!==w||work.height!==h){work.width=w;work.height=h}
+  wctx.drawImage(video,sx,sy,sw,sh,0,0,w,h);
+  const d=wctx.getImageData(0,0,w,h).data, g=new Float32Array(w*h);
+  for(let i=0,j=0;i<g.length;i++,j+=4) g[i]=0.299*d[j]+0.587*d[j+1]+0.114*d[j+2];
+  return {g:g,w:w,h:h};
+}
+function analyze(g,w,h,cols,rows){
+  if(gcache.w!==w||gcache.h!==h||gcache.cols!==cols||gcache.rows!==rows){
+    gcache={w:w,h:h,cols:cols,rows:rows,cx:new Uint16Array(w),cy:new Uint16Array(h)};
+    for(let x=0;x<w;x++) gcache.cx[x]=Math.min(cols-1,Math.floor(x*cols/w));
+    for(let y=0;y<h;y++) gcache.cy[y]=Math.min(rows-1,Math.floor(y*rows/h));
+  }
+  const n=cols*rows,xx=new Float64Array(n),yy=new Float64Array(n),xy=new Float64Array(n),c=new Uint32Array(n),cx=gcache.cx,cy=gcache.cy;
+  for(let y=1;y<h-1;y++){
+    const r=cy[y]*cols,o=y*w;
+    for(let x=1;x<w-1;x++){
+      const i=o+x;
+      const gx=(g[i-w+1]+2*g[i+1]+g[i+w+1])-(g[i-w-1]+2*g[i-1]+g[i+w-1]);
+      const gy=(g[i+w-1]+2*g[i+w]+g[i+w+1])-(g[i-w-1]+2*g[i-w]+g[i-w+1]);
+      const k=r+cx[x]; xx[k]+=gx*gx; yy[k]+=gy*gy; xy[k]+=gx*gy; c[k]++;
+    }
+  }
+  const th=new Float32Array(n),coh=new Float32Array(n),en=new Float32Array(n);
+  for(let k=0;k<n;k++){
+    const a=xx[k]-yy[k],b=2*xy[k],s=xx[k]+yy[k];
+    th[k]=0.5*Math.atan2(b,a); coh[k]=s>0?Math.sqrt(a*a+b*b)/s:0; en[k]=c[k]?Math.sqrt(s/c[k]):0;
+  }
+  return {th:th,coh:coh,en:en,cols:cols,rows:rows};
+}
+function angDiff(a,b){let d=Math.abs(a-b)%Math.PI;if(d>Math.PI/2)d=Math.PI-d;return d*180/Math.PI}
+
+/* ---------- Calibration ---------- */
+function startCalib(){
+  if(!stream) return;
+  if(running) stopWatch();
+  const n=settings.cols*settings.rows;
+  cal={n:0,N:25,C:new Float64Array(n),S:new Float64Array(n),coh:new Float64Array(n),en:new Float64Array(n)};
+  mode='calib'; updateUI();
+}
+function calibStep(a){
+  const n=a.cols*a.rows;
+  for(let k=0;k<n;k++){cal.C[k]+=Math.cos(2*a.th[k]);cal.S[k]+=Math.sin(2*a.th[k]);cal.coh[k]+=a.coh[k];cal.en[k]+=a.en[k]}
+  cal.n++;
+  if(cal.n>=cal.N){
+    const N=cal.n,r={cols:a.cols,rows:a.rows,th:[],coh:[],en:[],valid:[]};let ok=0,gc=0,gs=0;
+    for(let k=0;k<n;k++){
+      const mc=cal.C[k]/N,ms=cal.S[k]/N,stab=Math.hypot(mc,ms),th=0.5*Math.atan2(ms,mc),coh=cal.coh[k]/N,en=cal.en[k]/N;
+      const v=coh>0.18&&en>6&&stab>0.8;
+      r.th.push(+th.toFixed(4));r.coh.push(+coh.toFixed(3));r.en.push(+en.toFixed(2));r.valid.push(v?1:0);
+      if(v){ok++;gc+=Math.cos(2*th)*coh;gs+=Math.sin(2*th)*coh}
+    }
+    r.edgeDeg=+((0.5*Math.atan2(gs,gc)+Math.PI/2)*180/Math.PI%180).toFixed(1);
+    r.ok=ok; r.at=Date.now(); ref=r; save('st_ref',ref); cal=null; hits=null; mode='ready'; updateUI();
+    if(ok<n*0.3) banner('Seulement '+ok+' cases exploitables sur '+n+'. Rapprochez le téléphone, éclairez la trémie ou réduisez la grille dans Réglages.');
+    else toast('Calibration réussie : '+ok+'/'+n+' cases surveillées.');
+  }
+}
+
+/* ---------- Détection ---------- */
+function detect(a){
+  if(!ref||ref.cols!==a.cols||ref.rows!==a.rows) return;
+  const n=a.cols*a.rows;
+  if(!hits||hits.length!==n){hits=new Uint8Array(n);flags=new Uint8Array(n)}
+  const thr=settings.angle,drop=1-settings.cohDrop/100,conf=[];
+  for(let k=0;k<n;k++){
+    if(!ref.valid[k]){hits[k]=0;flags[k]=0;continue}
+    const d=angDiff(a.th[k],ref.th[k]);
+    const bad=(a.coh[k]>0.15&&d>thr)||(a.en[k]>ref.en[k]*0.4&&a.coh[k]<ref.coh[k]*drop);
+    flags[k]=bad?1:0;
+    hits[k]=bad?Math.min(255,hits[k]+1):(hits[k]>2?hits[k]-2:0);
+    if(hits[k]>=settings.persist) conf.push(k);
+  }
+  const now=Date.now();
+  if(conf.length>=settings.minCells&&now>pauseUntil&&now>rearmUntil&&mode!=='alarm') triggerAlarm(conf,'Détection');
+}
+
+/* ---------- Boucle ---------- */
+function tick(){
+  if(!stream) return;
+  if(video.readyState>=2&&roi&&!draft){
+    const g=grab();
+    if(g){
+      last=analyze(g.g,g.w,g.h,settings.cols,settings.rows);
+      if(mode==='calib'&&cal) calibStep(last);
+      else if(running&&mode!=='alarm') detect(last);
+    }
+  }
+  draw(); frames++;
+  const t=performance.now(); if(t-fpsT>1000){fps=frames*1000/(t-fpsT);frames=0;fpsT=t;updateUI()}
+  loopT=setTimeout(tick,90);
+}
+
+/* ---------- Dessin ---------- */
+function draw(){
+  const W=stage.clientWidth,H=stage.clientHeight,dpr=window.devicePixelRatio||1;
+  if(ov.width!==Math.round(W*dpr)||ov.height!==Math.round(H*dpr)){ov.width=Math.round(W*dpr);ov.height=Math.round(H*dpr)}
+  octx.setTransform(dpr,0,0,dpr,0,0); octx.clearRect(0,0,W,H);
+  if(!stream) return;
+  const cr=contentRect(),r=draft||roi; if(!r) return;
+  const rx=cr.x+r.x*cr.w,ry=cr.y+r.y*cr.h,rw=r.w*cr.w,rh=r.h*cr.h;
+  octx.fillStyle='rgba(0,0,0,.5)';
+  octx.fillRect(0,0,W,ry);octx.fillRect(0,ry+rh,W,H-ry-rh);octx.fillRect(0,ry,rx,rh);octx.fillRect(rx+rw,ry,W-rx-rw,rh);
+  if(last&&!draft){
+    const cols=last.cols,rows=last.rows,cw=rw/cols,ch=rh/rows,L=Math.min(cw,ch)*0.36,useRef=ref&&ref.cols===cols&&ref.rows===rows;
+    octx.lineWidth=2; octx.lineCap='round';
+    for(let j=0;j<rows;j++)for(let i=0;i<cols;i++){
+      const k=j*cols+i,x=rx+(i+.5)*cw,y=ry+(j+.5)*ch;
+      if(useRef&&!ref.valid[k]){octx.fillStyle='rgba(141,154,166,.5)';octx.fillRect(x-1.5,y-1.5,3,3);continue}
+      let col=mode==='calib'?C.sig:C.ok;
+      if(running&&hits&&hits.length===cols*rows){
+        if(hits[k]>=settings.persist){col=C.bad;octx.fillStyle='rgba(239,59,54,.35)';octx.fillRect(rx+i*cw+1,ry+j*ch+1,cw-2,ch-2)}
+        else if(flags[k]) col=C.warn;
+      } else if(!useRef&&mode!=='calib') col='rgba(233,238,242,.55)';
+      const e=last.th[k]+Math.PI/2,dx=Math.cos(e)*L,dy=Math.sin(e)*L;
+      octx.strokeStyle=col; octx.globalAlpha=Math.max(.35,Math.min(1,last.coh[k]*1.6));
+      octx.beginPath();octx.moveTo(x-dx,y-dy);octx.lineTo(x+dx,y+dy);octx.stroke();
+    }
+    octx.globalAlpha=1;
+  }
+  octx.setLineDash(mode==='draw'?[8,6]:[]); octx.strokeStyle=C.sig; octx.lineWidth=2.5; octx.strokeRect(rx,ry,rw,rh); octx.setLineDash([]);
+  if(mode==='draw'&&!draft){
+    octx.fillStyle=C.sig; octx.font='700 18px "Barlow Condensed",sans-serif'; octx.textAlign='center';
+    octx.fillText('TRACEZ LA ZONE DE LA TRÉMIE AU DOIGT',W/2,28);
+  }
+}
+
+/* ---------- Tracé de la zone ---------- */
+ov.addEventListener('pointerdown',e=>{if(mode!=='draw')return;ov.setPointerCapture(e.pointerId);dragStart=toNorm(e);draft={x:dragStart.x,y:dragStart.y,w:0,h:0}});
+ov.addEventListener('pointermove',e=>{if(!dragStart)return;const p=toNorm(e);draft={x:Math.min(p.x,dragStart.x),y:Math.min(p.y,dragStart.y),w:Math.abs(p.x-dragStart.x),h:Math.abs(p.y-dragStart.y)}});
+ov.addEventListener('pointerup',()=>{
+  if(!dragStart)return; dragStart=null;
+  if(draft&&draft.w>0.05&&draft.h>0.05){roi=draft;save('st_roi',roi);ref=null;save('st_ref',null);hits=null;mode='ready';toast('Zone enregistrée. Calibrez maintenant, trémie normale.')}
+  else toast('Zone trop petite, recommencez.');
+  draft=null; updateUI();
+});
+$('#btnZone').onclick=()=>{if(running)stopWatch();mode=(mode==='draw')?'ready':'draw';updateUI()};
+$('#btnCalib').onclick=startCalib;
+
+/* ---------- Son, vibration, écran allumé ---------- */
+let ac=null,osc=null,gain=null,sndT=null,vibT=null,wl=null;
+function ensureAudio(){
+  try{if(navigator.audioSession)navigator.audioSession.type='playback'}catch(e){}
+  try{
+    if(!ac){const AC=window.AudioContext||window.webkitAudioContext;ac=new AC()}
+    if(ac.state==='suspended')ac.resume();
+    const b=ac.createBuffer(1,1,22050),s=ac.createBufferSource();s.buffer=b;s.connect(ac.destination);s.start(0);
+  }catch(e){}
+}
+function startSound(){
+  stopSound(); if(!ac) return;
+  try{
+    if(ac.state==='suspended')ac.resume();
+    osc=ac.createOscillator();gain=ac.createGain();osc.connect(gain);gain.connect(ac.destination);
+    const v=settings.volume/100*0.7;
+    if(settings.sound==='bip'){
+      osc.type='square';osc.frequency.value=2200;gain.gain.value=0;
+      const step=()=>{const t=ac.currentTime;gain.gain.setValueAtTime(v,t);gain.gain.setValueAtTime(0,t+.12);gain.gain.setValueAtTime(v,t+.24);gain.gain.setValueAtTime(0,t+.36)};
+      step();sndT=setInterval(step,700);
+    }else{
+      osc.type='sawtooth';osc.frequency.value=700;gain.gain.value=v;let up=true;
+      const step=()=>{const t=ac.currentTime,f=osc.frequency;f.cancelScheduledValues(t);f.setValueAtTime(up?700:1400,t);f.linearRampToValueAtTime(up?1400:700,t+.45);up=!up};
+      step();sndT=setInterval(step,450);
+    }
+    osc.start();
+  }catch(e){}
+  if(navigator.vibrate){navigator.vibrate([400,150,400]);vibT=setInterval(()=>navigator.vibrate([400,150,400]),1200)}
+}
+function stopSound(){clearInterval(sndT);clearInterval(vibT);sndT=vibT=null;try{if(osc)osc.stop()}catch(e){}osc=null;if(navigator.vibrate)navigator.vibrate(0)}
+async function keepAwake(){try{if('wakeLock' in navigator&&!wl){wl=await navigator.wakeLock.request('screen');wl.addEventListener('release',()=>{wl=null})}}catch(e){}}
+function releaseAwake(){try{if(wl)wl.release()}catch(e){}wl=null}
+
+/* ---------- Surveillance ---------- */
+function startWatch(){
+  if(!ref||ref.cols!==settings.cols||ref.rows!==settings.rows){toast("Calibrez d'abord, avec la trémie normale.");return}
+  ensureAudio(); keepAwake(); running=true; hits=null; pauseUntil=0; rearmUntil=Date.now()+2000; mode='ready'; updateUI();
+  toast('Surveillance active. Laissez cet écran ouvert.');
+}
+function stopWatch(){running=false;hits=null;pauseUntil=0;releaseAwake();updateUI()}
+$('#btnGo').onclick=()=>{running?stopWatch():startWatch()};
+$('#btnPause').onclick=()=>{
+  if(Date.now()<pauseUntil){pauseUntil=0;toast('Surveillance reprise.')}
+  else{pauseUntil=Date.now()+60000;if(hits)hits.fill(0);toast('Pause 1 minute pour intervention.')}
+  updateUI();
+};
+
+/* ---------- Alarme ---------- */
+function snapshot(cells){
+  const vw=video.videoWidth,vh=video.videoHeight; if(!vw) return '';
+  const W=480,H=Math.round(W*vh/vw),c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d');
+  x.drawImage(video,0,0,W,H);
+  if(roi){
+    const rx=roi.x*W,ry=roi.y*H,rw=roi.w*W,rh=roi.h*H; x.strokeStyle=C.sig;x.lineWidth=2;x.strokeRect(rx,ry,rw,rh);
+    if(cells&&last){const cw=rw/last.cols,ch=rh/last.rows;x.strokeStyle=C.bad;x.lineWidth=3;
+      cells.forEach(k=>{const i=k%last.cols,j=Math.floor(k/last.cols);x.strokeRect(rx+i*cw,ry+j*ch,cw,ch)})}
+  }
+  try{return c.toDataURL('image/jpeg',0.6)}catch(e){return ''}
+}
+function triggerAlarm(cells,src){
+  mode='alarm'; const d=new Date(), img=snapshot(cells);
+  $('#alarmImg').src=img||''; $('#alarmImg').hidden=!img;
+  $('#alarmInfo').textContent=fmtT(d)+' · Shift '+shiftOf(d)+' · '+(cells.length?cells.length+' case'+(cells.length>1?'s':'')+' en défaut':'Test');
+  $('#alarm').hidden=false; startSound();
+  hist.unshift({t:d.getTime(),shift:shiftOf(d),cells:cells.length,src:src,img:img,ack:null}); hist=hist.slice(0,20); save('st_hist',hist); renderHist(); updateUI();
+}
+$('#btnAck').onclick=()=>{
+  stopSound(); $('#alarm').hidden=true;
+  if(hist[0]&&hist[0].ack===null){hist[0].ack=Math.round((Date.now()-hist[0].t)/1000);save('st_hist',hist);renderHist()}
+  if(hits)hits.fill(0); rearmUntil=Date.now()+settings.rearm*1000; mode=stream?'ready':'off'; updateUI();
+};
+$('#btnTest').onclick=()=>{ensureAudio();triggerAlarm([],'Test')};
+
+/* ---------- Interface ---------- */
+function updateUI(){
+  const pill=$('#pill'),now=Date.now();let s='off',t='Caméra éteinte';
+  if(mode==='alarm'){s='alarm';t='Alarme'}
+  else if(mode==='calib'&&cal){s='calib';t='Calibration '+Math.round(cal.n/cal.N*100)+' %'}
+  else if(mode==='draw'){s='draw';t='Tracé de la zone'}
+  else if(running&&now<pauseUntil){s='pause';const r=Math.ceil((pauseUntil-now)/1000);t='Pause '+Math.floor(r/60)+':'+pad(r%60)}
+  else if(running){s='watch';t='Surveillance active'}
+  else if(stream){s='ready';t=ref?'Prêt':'À calibrer'}
+  pill.dataset.s=s; pill.textContent=t;
+  const has=!!stream;
+  $('#btnZone').disabled=!has; $('#btnCalib').disabled=!has; $('#btnGo').disabled=!has; $('#btnPause').disabled=!running;
+  $('#btnZone').textContent=mode==='draw'?'Annuler':'Zone';
+  $('#btnGo').textContent=running?'Arrêter':'Surveiller'; $('#btnGo').classList.toggle('stop',running);
+  $('#btnPause').textContent=(running&&now<pauseUntil)?'Reprendre':'Pause 1 min';
+  const d=new Date(); $('#sub').textContent='Focke 350 · Ligne LU 44 · Shift '+shiftOf(d);
+  if(has){
+    let n=0;if(hits&&running)for(let k=0;k<hits.length;k++)if(hits[k]>=settings.persist)n++;
+    const parts=[fps.toFixed(0)+' img/s'];
+    if(ref&&ref.cols===settings.cols&&ref.rows===settings.rows)parts.push(ref.ok+'/'+(ref.cols*ref.rows)+' cases',"Axe "+ref.edgeDeg+'°');
+    else parts.push('Non calibré');
+    if(running)parts.push('Défauts '+n);
+    $('#stats').innerHTML=parts.map(p=>'<span>'+p+'</span>').join('');
+  }
+}
+setInterval(updateUI,1000);
+
+/* ---------- Réglages ---------- */
+const FIELDS=[
+  {id:'angle',label:"Écart d'angle toléré",min:5,max:40,unit:'°',help:'Plus bas = plus sensible. 15° convient pour commencer.'},
+  {id:'persist',label:'Images de confirmation',min:3,max:30,unit:' img',help:"Le défaut doit durer ce nombre d'images (environ 10 par seconde) avant l'alarme. Filtre les vibrations."},
+  {id:'minCells',label:'Cases en défaut pour alarmer',min:1,max:6,unit:'',help:'Montez à 2 si une seule case donne des fausses alarmes.'},
+  {id:'cohDrop',label:'Désordre toléré',min:20,max:80,unit:' %',help:"Perte d'alignement acceptée dans une case (cigarettes croisées)."},
+  {id:'cols',label:'Colonnes de la grille',min:6,max:20,unit:'',help:'Modifier la grille demande une nouvelle calibration.',grid:1},
+  {id:'rows',label:'Lignes de la grille',min:4,max:14,unit:'',help:'',grid:1},
+  {id:'rearm',label:'Réarmement après acquittement',min:3,max:60,unit:' s',help:"Délai avant qu'une nouvelle alarme soit possible."},
+  {id:'volume',label:'Volume',min:20,max:100,unit:' %',help:''}
+];
+function renderSettings(){
+  const b=$('#setBody');
+  b.innerHTML=FIELDS.map(f=>'<div class="field"><label for="s_'+f.id+'">'+f.label+'<output id="o_'+f.id+'">'+settings[f.id]+f.unit+'</output></label><input type="range" id="s_'+f.id+'" min="'+f.min+'" max="'+f.max+'" step="1" value="'+settings[f.id]+'">'+(f.help?'<small>'+f.help+'</small>':'')+'</div>').join('')
+   +'<div class="field"><label>Son de l\'alarme</label><div class="seg"><button id="snd_sirene" aria-pressed="'+(settings.sound==='sirene')+'">Sirène</button><button id="snd_bip" aria-pressed="'+(settings.sound==='bip')+'">Bips</button></div></div>'
+   +'<button id="btnReset">Valeurs par défaut</button>';
+  FIELDS.forEach(f=>{const i=$('#s_'+f.id);i.oninput=()=>{settings[f.id]=+i.value;$('#o_'+f.id).textContent=i.value+f.unit;save('st_settings',settings);
+    if(f.grid){hits=null;if(running)stopWatch();if(ref&&(ref.cols!==settings.cols||ref.rows!==settings.rows))toast('Grille modifiée : recalibrez.')}}});
+  ['sirene','bip'].forEach(k=>{$('#snd_'+k).onclick=()=>{settings.sound=k;save('st_settings',settings);renderSettings();ensureAudio();startSound();setTimeout(stopSound,1500)}});
+  $('#btnReset').onclick=()=>{const g=settings.cols!==DEF.cols||settings.rows!==DEF.rows;settings=Object.assign({},DEF);save('st_settings',settings);renderSettings();if(g){hits=null;if(running)stopWatch();toast('Grille modifiée : recalibrez.')}};
+}
+$('#btnSet').onclick=()=>{renderSettings();$('#sheetSet').hidden=false};
+document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>{$('#'+b.dataset.close).hidden=true;updateUI()});
+
+/* ---------- Historique ---------- */
+function renderHist(){
+  const h=$('#hist');
+  if(!hist.length){h.innerHTML='<div class="empty">Aucune alarme enregistrée pour le moment.</div>';return}
+  h.innerHTML=hist.map(e=>{const d=new Date(e.t);return '<div class="hitem">'+(e.img?'<img src="'+e.img+'" alt="">':'<div></div>')+'<div><b>'+(e.src==='Test'?'Test alarme':e.cells+' case'+(e.cells>1?'s':'')+' en défaut')+'</b><span>'+fmtD(d)+' · '+fmtT(d)+' · Shift '+e.shift+'</span><span>'+(e.ack===null?'Non acquittée':'Acquittée en '+e.ack+' s')+'</span></div></div>'}).join('');
+}
+$('#btnHist').onclick=()=>{renderHist();$('#sheetHist').hidden=false;$('#btnClear').textContent='Effacer';};
+$('#btnClear').onclick=function(){
+  if(this.textContent==='Effacer'){this.textContent="Confirmer l'effacement";return}
+  hist=[];save('st_hist',hist);renderHist();this.textContent='Effacer';toast('Historique effacé.');
+};
+$('#btnCsv').onclick=()=>{
+  if(!hist.length){toast('Rien à exporter.');return}
+  const rows=[['date','heure','shift','origine','cases_en_defaut','delai_acquittement_s']].concat(hist.map(e=>{const d=new Date(e.t);return [fmtD(d),fmtT(d),e.shift,e.src,e.cells,e.ack===null?'':e.ack]}));
+  const csv=rows.map(r=>r.join(';')).join('\n');
+  try{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['﻿'+csv],{type:'text/csv'}));a.download='alarmes-tremie-LU44.csv';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1000)}
+  catch(e){toast("Export impossible sur cet appareil.")}
+};
+
+/* ---------- Retour au premier plan ---------- */
+document.addEventListener('visibilitychange',async()=>{
+  if(document.visibilityState==='hidden'){if(running)hiddenAt=Date.now();return}
+  if(stream){const tr=stream.getVideoTracks()[0];if(!tr||tr.readyState==='ended')await startCamera();else video.play().catch(()=>{})}
+  if(running){keepAwake();ensureAudio();if(hiddenAt){const s=Math.round((Date.now()-hiddenAt)/1000);banner("Surveillance interrompue "+s+" s pendant que l'écran était quitté. Elle a repris.");hiddenAt=0}}
+});
+window.addEventListener('resize',draw);
+
+/* ---------- Icône d'écran d'accueil ---------- */
+try{
+  const c=document.createElement('canvas');c.width=c.height=180;const x=c.getContext('2d');
+  x.fillStyle='#0f1316';x.fillRect(0,0,180,180);x.strokeStyle=C.sig;x.lineWidth=8;x.strokeRect(22,22,136,136);
+  x.lineCap='round';x.lineWidth=12;x.strokeStyle='#e9eef2';[58,82,130].forEach(y=>{x.beginPath();x.moveTo(46,y);x.lineTo(134,y);x.stroke()});
+  x.strokeStyle=C.bad;x.beginPath();x.moveTo(50,118);x.lineTo(130,94);x.stroke();
+  $('#touchIcon').href=c.toDataURL('image/png');
+}catch(e){}
+
+updateUI(); draw();
+})();
+</script>
+</body>
+</html>
