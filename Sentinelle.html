@@ -137,10 +137,10 @@ input[type=range]{width:100%;accent-color:var(--sig);height:32px}
     <div class="intro" id="intro">
       <div class="intro-card">
         <h1>Surveillance de la trémie</h1>
-        <p>L'iPhone filme la trémie et sonne dès qu'une cigarette sort de l'alignement.</p>
+        <p>L'iPhone filme les bouts des cigarettes dans la trémie et sonne dès qu'une cigarette couchée ou renversée apparaît.</p>
         <ol>
           <li>Fixez l'iPhone face à la trémie, bien stable, sans gêner la machine.</li>
-          <li>Allumez la caméra et tracez au doigt la zone à surveiller.</li>
+          <li>Allumez la caméra et tracez au doigt la zone à surveiller : seulement sur les bouts de cigarettes, sans barres métalliques ni bords de la vitre.</li>
           <li>Calibrez quand la trémie est normale (cigarettes bien rangées).</li>
           <li>Lancez la surveillance et laissez l'écran ouvert. Conseil : Réglages iPhone › Luminosité et affichage › Verrouillage auto › Jamais, et iPhone branché au chargeur.</li>
         </ol>
@@ -209,16 +209,20 @@ const C={ok:css.getPropertyValue('--ok').trim(),warn:css.getPropertyValue('--war
 /* ---------- Stockage ---------- */
 function load(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}}
 function save(k,v){try{localStorage.setItem(k,JSON.stringify(v));return true}catch(e){return false}}
-const DEF={angle:15,persist:8,minCells:1,cohDrop:55,cols:12,rows:8,rearm:10,volume:90,sound:'sirene',voice:true,adapt:true,blockSec:8,pauseMin:1};
+const DEF={len:6,edge:35,persist:8,minCells:1,cols:12,rows:8,rearm:10,volume:90,sound:'sirene',voice:true,adapt:true,blockSec:8,pauseMin:1};
 let settings=Object.assign({},DEF,load('st_settings',{}));
+delete settings.angle; delete settings.cohDrop; // anciens réglages (ancienne méthode)
 let roi=load('st_roi',null);
 let ref=load('st_ref',null);
+let oldRef=false;
+if(ref&&ref.v!==2){ref=null;oldRef=true;save('st_ref',null)} // calibration de l'ancienne méthode : à refaire
 let hist=load('st_hist',[]);
 
 /* ---------- État ---------- */
 let stream=null, mode='off', running=false;
 let pauseUntil=0, rearmUntil=0, hits=null, flags=null, last=null, cal=null, draft=null, dragStart=null;
 let loopT=null, frames=0, fpsT=performance.now(), fps=0, hiddenAt=0;
+let presEma=1, moved=false, movedSince=0;
 let prevG=null, stillSince=0, blockedSince=0, blocked=false, adaptN=0, torchOn=false, awakeWarned=false;
 const HIST_MAX=30;
 function saveHist(){
@@ -244,14 +248,15 @@ async function startCamera(){
   }
   try{
     if(stream) stream.getTracks().forEach(t=>t.stop());
-    stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}}});
+    stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}}});
     video.srcObject=stream; await video.play().catch(()=>{});
     prevG=null; stillSince=0; blockedSince=0; blocked=false;
     if(torchOn) setTorch(true);
     $('#intro').hidden=true; $('#stats').hidden=false;
     if(!roi){roi={x:.1,y:.15,w:.8,h:.7};save('st_roi',roi)}
     mode='ready'; ensureAudio(); updateUI();
-    if(!ref) toast('Tracez la zone de la trémie, puis calibrez.');
+    if(oldRef){oldRef=false;banner('Nouvelle méthode de détection : recalibrez une fois, trémie normale.')}
+    else if(!ref) toast('Tracez la zone de la trémie, puis calibrez.');
     clearTimeout(loopT); tick();
   }catch(e){
     err.textContent=(e&&e.name==='NotAllowedError')?"Accès à la caméra refusé. Réglages iPhone › Safari › Caméra › Autoriser, puis rechargez la page.":"Impossible d'ouvrir la caméra ("+(e&&e.name||'erreur')+").";
@@ -277,87 +282,202 @@ function toNorm(e){
   return {x:Math.min(1,Math.max(0,(e.clientX-b.left-cr.x)/cr.w)),y:Math.min(1,Math.max(0,(e.clientY-b.top-cr.y)/cr.h))};
 }
 
-/* ---------- Analyse d'image (tenseur de structure par case) ---------- */
-const AW=192; let gcache={w:0,h:0,cols:0,rows:0,cx:null,cy:null};
+/* ---------- Analyse d'image : recherche de « bâtonnets » ----------
+   Vue de face, la trémie normale ne montre que des bouts ronds : leurs bords sont courts et courbes.
+   Une cigarette couchée ou renversée montre au contraire de longs bords droits.
+   On cherche donc les bords droits plus longs que « len » % de la largeur de la zone.
+   Les pièces fixes (barres, chaîne, cadre) sont apprises pendant la calibration et ignorées. */
+const AW=384;
+//@@CORE-START
+const NB=12; // 12 directions, tous les 15°
+const core={w:0,h:0};
+function prepCore(w,h){
+  const n=w*h;
+  core.w=w;core.h=h;core.bl=new Float32Array(n);core.tmp=new Float32Array(n);core.mag=new Float32Array(n);
+  core.bits=new Uint16Array(n);core.rod=new Uint8Array(n);core.lines=[];core.step=[];core.cellOf=null;
+  // Pour chaque direction : la liste des lignes de pixels à parcourir (chaque pixel une seule fois par direction)
+  for(let b=0;b<NB;b++){
+    const a=b*Math.PI/NB,dx=Math.cos(a),dy=Math.sin(a),seqs=[];
+    if(Math.abs(dx)>=Math.abs(dy)){
+      const s=dy/dx,ext=Math.ceil(Math.abs(s)*w)+1;
+      for(let y0=-ext;y0<h+ext;y0++){const q=[];for(let x=0;x<w;x++){const y=Math.round(y0+s*x);if(y>=0&&y<h)q.push(y*w+x)}if(q.length>1)seqs.push(Int32Array.from(q))}
+      core.step.push(1/Math.abs(dx));
+    }else{
+      const s=dx/dy,ext=Math.ceil(Math.abs(s)*h)+1;
+      for(let x0=-ext;x0<w+ext;x0++){const q=[];for(let y=0;y<h;y++){const x=Math.round(x0+s*y);if(x>=0&&x<w)q.push(y*w+x)}if(q.length>1)seqs.push(Int32Array.from(q))}
+      core.step.push(1/Math.abs(dy));
+    }
+    core.lines.push(seqs);
+  }
+}
+// Lissage léger (2 passes [1 2 1]) puis bords (Sobel). Retourne le seuil de bord utilisé.
+function edgeMap(g,w,h,edgePct){
+  if(core.w!==w||core.h!==h) prepCore(w,h);
+  const bl=core.bl,tmp=core.tmp,mag=core.mag,bits=core.bits,n=w*h;
+  bl.set(g);
+  for(let p=0;p<2;p++){
+    for(let y=0;y<h;y++){const o=y*w;for(let x=0;x<w;x++){const l=x>0?x-1:0,r=x<w-1?x+1:w-1;tmp[o+x]=(bl[o+l]+2*bl[o+x]+bl[o+r])*0.25}}
+    for(let y=0;y<h;y++){const o=y*w,u=(y>0?y-1:0)*w,d=(y<h-1?y+1:h-1)*w;for(let x=0;x<w;x++)bl[o+x]=(tmp[u+x]+2*tmp[o+x]+tmp[d+x])*0.25}
+  }
+  const tg=tmp; const H=new Uint32Array(1600); mag.fill(0);
+  for(let y=1;y<h-1;y++){
+    for(let x=1;x<w-1;x++){
+      const i=y*w+x;
+      const gx=(bl[i-w+1]+2*bl[i+1]+bl[i+w+1])-(bl[i-w-1]+2*bl[i-1]+bl[i+w-1]);
+      const gy=(bl[i+w-1]+2*bl[i+w]+bl[i+w+1])-(bl[i-w-1]+2*bl[i-w]+bl[i-w+1]);
+      const m=Math.sqrt(gx*gx+gy*gy); mag[i]=m; H[Math.min(1599,m|0)]++;
+      let t=Math.atan2(gy,gx)+Math.PI/2; if(t<0)t+=Math.PI; if(t>=Math.PI)t-=Math.PI; tg[i]=t;
+    }
+  }
+  // Seuil = « edgePct » % des pixels les plus faibles (s'adapte seul à la lumière), jamais sous 12
+  let T=0,acc=0;const lim=n*edgePct/100;for(let k=0;k<1600;k++){acc+=H[k];if(acc>=lim){T=k;break}}
+  T=Math.max(12,T);
+  const u=NB/Math.PI;
+  for(let i=0;i<n;i++){
+    if(mag[i]<=T){bits[i]=0;continue}
+    const f=tg[i]*u,r=Math.round(f),a=r%NB,b=(f>=r?a+1:a+NB-1)%NB;
+    bits[i]=(1<<a)|(1<<b);
+  }
+  return T;
+}
+// Marque dans core.rod les pixels qui appartiennent à un bord droit d'au moins Lpx pixels
+function rodPass(Lpx){
+  const rod=core.rod,bits=core.bits;rod.fill(0);
+  for(let b=0;b<NB;b++){
+    const m=1<<b,need=Math.ceil(Lpx/core.step[b]),seqs=core.lines[b];
+    for(let j=0;j<seqs.length;j++){
+      const q=seqs[j],n=q.length;let s=-1,prev=false;
+      for(let i=0;i<=n;i++){
+        let on=i<n&&(bits[q[i]]&m)!==0;
+        if(!on&&prev&&i+1<n&&(bits[q[i+1]]&m)!==0) on=true; // comble un trou d'un pixel
+        if(on){if(s<0)s=i}
+        else if(s>=0){if(i-s>=need)for(let k=s;k<i;k++)rod[q[k]]=1;s=-1}
+        prev=on;
+      }
+    }
+  }
+}
+// Mesures par case : pixels « bâtonnet » nouveaux (hors pièces fixes), luminosité moyenne, texture moyenne
+function cellStats(g,w,h,cols,rows,stat){
+  if(!core.cellOf||core.cellCols!==cols||core.cellRows!==rows){
+    core.cellOf=new Uint16Array(w*h);core.cellCols=cols;core.cellRows=rows;
+    for(let y=0;y<h;y++){const cy=Math.min(rows-1,Math.floor(y*rows/h));for(let x=0;x<w;x++)core.cellOf[y*w+x]=cy*cols+Math.min(cols-1,Math.floor(x*cols/w))}
+  }
+  const n=cols*rows,rodN=new Uint16Array(n),m=new Float32Array(n),e=new Float32Array(n),c=new Uint32Array(n),co=core.cellOf,rod=core.rod,mag=core.mag;
+  let tot=0;const B=3; // bord ignoré : si le téléphone bouge un peu, ce qui est juste hors zone y entre
+  for(let y=0;y<h;y++){const inY=y>=B&&y<h-B;for(let x=0;x<w;x++){
+    const i=y*w+x,k=co[i];m[k]+=g[i];e[k]+=mag[i];c[k]++;
+    if(inY&&x>=B&&x<w-B&&rod[i]&&!(stat&&stat[i])){rodN[k]++;tot++}
+  }}
+  for(let k=0;k<n;k++){if(c[k]){m[k]/=c[k];e[k]/=c[k]}}
+  return {rodN:rodN,m:m,e:e,cols:cols,rows:rows,w:w,h:h,tot:tot};
+}
+// Analyse complète d'une image
+function analyzeFrame(g,w,h,o,stat){
+  const T=edgeMap(g,w,h,o.edge);
+  const Lpx=Math.max(8,o.len/100*w);
+  rodPass(Lpx);
+  const a=cellStats(g,w,h,o.cols,o.rows,stat);a.T=T;a.Lpx=Lpx;return a;
+}
+// Décision par case, à partir de la référence calibrée
+function judge(a,r,o){
+  const n=a.cols*a.rows,bad=new Uint8Array(n),chg=new Uint8Array(n),minPx=Math.max(4,Math.round(a.Lpx*0.35));
+  let nv=0,nc=0;
+  for(let k=0;k<n;k++){
+    if(!r.valid[k])continue; nv++;
+    const rm=r.m[k],re=r.e[k];
+    // Case très changée (main, objet, ombre, caméra bougée) : ce n'est pas une cigarette couchée
+    const changed=a.m[k]<rm*0.6||a.m[k]>rm*1.6||a.e[k]<re*0.4;
+    if(changed){chg[k]=1;nc++;continue}
+    if(a.rodN[k]>=minPx) bad[k]=1;
+  }
+  return {bad:bad,chg:chg,nv:nv,nc:nc,minPx:minPx};
+}
+// Masque compact (pour l'enregistrer) : suites alternées 0/1
+function rleEnc(a){const o=[];let v=0,c=0;for(let i=0;i<a.length;i++){if(a[i]===v)c++;else{o.push(c);v=a[i];c=1}}o.push(c);return o}
+function rleDec(r,n){const a=new Uint8Array(n);let p=0,v=0;for(let i=0;i<r.length;i++){if(v)a.fill(1,p,Math.min(n,p+r[i]));p+=r[i];v^=1}return a}
+// Fin de calibration : pièces fixes = bords droits vus dans au moins 2 images, élargis de 3 pixels
+// (une trémie normale ne montre presque jamais de long bord droit, donc ce qui en montre est une pièce de la machine)
+function finishCalib(cal,o){
+  const w=cal.w,h=cal.h,N=cal.n,n=o.cols*o.rows,st=new Uint8Array(w*h),lim=2;
+  for(let i=0;i<w*h;i++) if(cal.cnt[i]>=lim) st[i]=1;
+  const dl=new Uint8Array(w*h),R=3;
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){if(!st[y*w+x])continue;
+    for(let yy=Math.max(0,y-R);yy<=Math.min(h-1,y+R);yy++)for(let xx=Math.max(0,x-R);xx<=Math.min(w-1,x+R);xx++)dl[yy*w+xx]=1}
+  const r={v:2,cols:o.cols,rows:o.rows,len:o.len,edge:o.edge,w:w,h:h,m:[],e:[],valid:[],ok:0};
+  for(let k=0;k<n;k++){const m=cal.m[k]/N,e=cal.e[k]/N,v=e>3&&m>15;r.m.push(+m.toFixed(1));r.e.push(+e.toFixed(2));r.valid.push(v?1:0);if(v)r.ok++}
+  // Repères fixes « solides » (vus dans au moins 60 % des images) : servent à voir si le téléphone a bougé
+  const fix=new Uint8Array(w*h);let nf=0,seen=0;const lim2=Math.ceil(N*0.6);
+  for(let i=0;i<w*h;i++)if(cal.cnt[i]>=lim2){fix[i]=1;nf++;seen+=cal.cnt[i]/N}
+  r.fixN=nf;r.pres=nf?+(seen/nf).toFixed(3):0;
+  r.stat=dl;r.fix=fix;return r;
+}
+// Part des repères fixes retrouvés à leur place (à 1 pixel près) dans l'image actuelle
+function presence(fix,w,h){
+  const rod=core.rod;let n=0,ok=0;
+  for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){const i=y*w+x;if(!fix[i])continue;n++;
+    if(rod[i]||rod[i-1]||rod[i+1]||rod[i-w]||rod[i+w]||rod[i-w-1]||rod[i-w+1]||rod[i+w-1]||rod[i+w+1])ok++}
+  return n?ok/n:1;
+}
+//@@CORE-END
 function grab(){
   const vw=video.videoWidth,vh=video.videoHeight; if(!vw||!vh||!roi) return null;
   const sx=roi.x*vw,sy=roi.y*vh,sw=Math.max(8,roi.w*vw),sh=Math.max(8,roi.h*vh);
-  const w=AW,h=Math.max(24,Math.min(256,Math.round(AW*sh/sw)));
+  const w=AW,h=Math.max(48,Math.min(384,Math.round(AW*sh/sw)));
   if(work.width!==w||work.height!==h){work.width=w;work.height=h}
   wctx.drawImage(video,sx,sy,sw,sh,0,0,w,h);
   const d=wctx.getImageData(0,0,w,h).data, g=new Float32Array(w*h);
   for(let i=0,j=0;i<g.length;i++,j+=4) g[i]=0.299*d[j]+0.587*d[j+1]+0.114*d[j+2];
   return {g:g,w:w,h:h};
 }
-function analyze(g,w,h,cols,rows){
-  if(gcache.w!==w||gcache.h!==h||gcache.cols!==cols||gcache.rows!==rows){
-    gcache={w:w,h:h,cols:cols,rows:rows,cx:new Uint16Array(w),cy:new Uint16Array(h)};
-    for(let x=0;x<w;x++) gcache.cx[x]=Math.min(cols-1,Math.floor(x*cols/w));
-    for(let y=0;y<h;y++) gcache.cy[y]=Math.min(rows-1,Math.floor(y*rows/h));
-  }
-  const n=cols*rows,xx=new Float64Array(n),yy=new Float64Array(n),xy=new Float64Array(n),c=new Uint32Array(n),cx=gcache.cx,cy=gcache.cy;
-  for(let y=1;y<h-1;y++){
-    const r=cy[y]*cols,o=y*w;
-    for(let x=1;x<w-1;x++){
-      const i=o+x;
-      const gx=(g[i-w+1]+2*g[i+1]+g[i+w+1])-(g[i-w-1]+2*g[i-1]+g[i+w-1]);
-      const gy=(g[i+w-1]+2*g[i+w]+g[i+w+1])-(g[i-w-1]+2*g[i-w]+g[i-w+1]);
-      const k=r+cx[x]; xx[k]+=gx*gx; yy[k]+=gy*gy; xy[k]+=gx*gy; c[k]++;
-    }
-  }
-  const th=new Float32Array(n),coh=new Float32Array(n),en=new Float32Array(n);
-  for(let k=0;k<n;k++){
-    const a=xx[k]-yy[k],b=2*xy[k],s=xx[k]+yy[k];
-    th[k]=0.5*Math.atan2(b,a); coh[k]=s>0?Math.sqrt(a*a+b*b)/s:0; en[k]=c[k]?Math.sqrt(s/c[k]):0;
-  }
-  return {th:th,coh:coh,en:en,cols:cols,rows:rows};
-}
-function angDiff(a,b){let d=Math.abs(a-b)%Math.PI;if(d>Math.PI/2)d=Math.PI-d;return d*180/Math.PI}
+function refFits(a){return refReady()&&ref.w===a.w&&ref.h===a.h}
+function refReady(){return !!ref&&ref.v===2&&ref.cols===settings.cols&&ref.rows===settings.rows&&ref.len===settings.len&&ref.edge===settings.edge}
 
 /* ---------- Calibration ---------- */
 function startCalib(){
   if(!stream) return;
   if(running) stopWatch();
-  const n=settings.cols*settings.rows;
-  cal={n:0,N:25,C:new Float64Array(n),S:new Float64Array(n),coh:new Float64Array(n),en:new Float64Array(n)};
+  cal={n:0,N:30,w:0,h:0,cnt:null,m:null,e:null};
   mode='calib'; updateUI();
 }
 function calibStep(a){
   const n=a.cols*a.rows;
-  for(let k=0;k<n;k++){cal.C[k]+=Math.cos(2*a.th[k]);cal.S[k]+=Math.sin(2*a.th[k]);cal.coh[k]+=a.coh[k];cal.en[k]+=a.en[k]}
+  if(!cal.cnt||cal.w!==a.w||cal.h!==a.h){cal.w=a.w;cal.h=a.h;cal.n=0;cal.cnt=new Uint16Array(a.w*a.h);cal.m=new Float64Array(n);cal.e=new Float64Array(n)}
+  const rod=core.rod;for(let i=0;i<rod.length;i++)if(rod[i])cal.cnt[i]++;
+  for(let k=0;k<n;k++){cal.m[k]+=a.m[k];cal.e[k]+=a.e[k]}
   cal.n++;
   if(cal.n>=cal.N){
-    const N=cal.n,r={cols:a.cols,rows:a.rows,th:[],coh:[],en:[],valid:[]};let ok=0,gc=0,gs=0;
-    for(let k=0;k<n;k++){
-      const mc=cal.C[k]/N,ms=cal.S[k]/N,stab=Math.hypot(mc,ms),th=0.5*Math.atan2(ms,mc),coh=cal.coh[k]/N,en=cal.en[k]/N;
-      const v=coh>0.18&&en>6&&stab>0.8;
-      r.th.push(+th.toFixed(4));r.coh.push(+coh.toFixed(3));r.en.push(+en.toFixed(2));r.valid.push(v?1:0);
-      if(v){ok++;gc+=Math.cos(2*th)*coh;gs+=Math.sin(2*th)*coh}
-    }
-    r.edgeDeg=+((0.5*Math.atan2(gs,gc)+Math.PI/2)*180/Math.PI%180).toFixed(1);
-    r.ok=ok; r.at=Date.now(); ref=r; save('st_ref',ref); cal=null; hits=null; adaptN=0; mode='ready'; updateUI();
-    if(ok<n*0.3) banner('Seulement '+ok+' cases exploitables sur '+n+'. Rapprochez le téléphone, éclairez la trémie ou réduisez la grille dans Réglages.');
-    else toast('Calibration réussie : '+ok+'/'+n+' cases surveillées.');
+    const r=finishCalib(cal,settings); r.at=Date.now();
+    const statArr=r.stat,fixArr=r.fix; r.stat=rleEnc(statArr); r.fix=rleEnc(fixArr); save('st_ref',r); r.statArr=statArr; r.fixArr=fixArr; presEma=1;
+    ref=r; cal=null; hits=null; adaptN=0; mode='ready'; updateUI();
+    const n2=r.cols*r.rows;
+    if(r.ok<n2*0.3) banner('Seulement '+r.ok+' cases exploitables sur '+n2+'. Rapprochez le téléphone ou éclairez la trémie.');
+    else toast('Calibration réussie : '+r.ok+'/'+n2+' cases surveillées.');
   }
 }
+function statOf(){if(!ref||ref.v!==2)return null;if(!ref.statArr)ref.statArr=rleDec(ref.stat||[],ref.w*ref.h);return ref.statArr}
+function fixOf(){if(!ref||ref.v!==2)return null;if(!ref.fixArr)ref.fixArr=rleDec(ref.fix||[],ref.w*ref.h);return ref.fixArr}
 
 /* ---------- Détection ---------- */
 function detect(a){
-  if(!ref||ref.cols!==a.cols||ref.rows!==a.rows) return;
+  if(!refFits(a)) return;
   const n=a.cols*a.rows;
   if(!hits||hits.length!==n){hits=new Uint8Array(n);flags=new Uint8Array(n)}
-  const thr=settings.angle,drop=1-settings.cohDrop/100,conf=[];
-  let nv=0,nf=0;
-  for(let k=0;k<n;k++){
-    if(!ref.valid[k]){flags[k]=0;continue}
-    const d=angDiff(a.th[k],ref.th[k]);
-    // Très sombre (main, objet devant l'objectif) : la case n'a plus de texture
-    const dark=a.en[k]<ref.en[k]*0.25;
-    const bad=dark||(a.coh[k]>0.15&&d>thr)||(a.en[k]>ref.en[k]*0.4&&a.coh[k]<ref.coh[k]*drop);
-    flags[k]=bad?1:0; nv++; if(bad)nf++;
-  }
+  const j=judge(a,ref,settings),conf=[];
+  const nv=j.nv,nf=j.nc;
+  for(let k=0;k<n;k++) flags[k]=j.bad[k];
   const now=Date.now();
-  // Vue masquée : plus de la moitié de la zone change d'un coup = main de l'opérateur ou caméra bougée, pas une cigarette
+  // Téléphone déplacé : les repères fixes (barres, chaîne) ne sont plus à leur place
+  if(ref.fixN>=25){presEma=presEma*0.8+0.2*presence(fixOf(),a.w,a.h)/Math.max(0.05,ref.pres)}else presEma=1;
+  const wasMoved=moved; moved=presEma<0.3&&!(nv>0&&nf>=nv*0.5); // une main devant prime
+  if(moved){
+    if(!wasMoved) movedSince=now;
+    for(let k=0;k<n;k++){hits[k]=hits[k]>2?hits[k]-2:0;flags[k]=0}
+    if(now-movedSince>=settings.blockSec*1000&&now>pauseUntil&&now>rearmUntil&&mode!=='alarm') triggerAlarm([],'Caméra déplacée');
+    return;
+  }
+  movedSince=0;
+  // Vue masquée : plus de la moitié de la zone change d'un coup = main de l'opérateur, pas une cigarette
   const wasBlocked=blocked;
   blocked=nv>0&&nf>=nv*0.5;
   if(blocked){
@@ -373,18 +493,19 @@ function detect(a){
     if(hits[k]>=settings.persist) conf.push(k);
   }
   if(conf.length>=settings.minCells&&now>pauseUntil&&now>rearmUntil&&mode!=='alarm'){triggerAlarm(conf,'Détection');return}
-  if(settings.adapt&&nf===0&&now>pauseUntil) adapt(a);
+  let anyBad=false;for(let k=0;k<n;k++)if(flags[k]){anyBad=true;break}
+  if(settings.adapt&&!anyBad&&nf===0&&now>pauseUntil) adapt(a);
 }
 
 /* ---------- Adaptation lente à la lumière (environ 1 minute), seulement quand tout est normal ---------- */
+function saveRef(){if(!ref)return;const r=Object.assign({},ref);delete r.statArr;delete r.fixArr;save('st_ref',r)}
 function adapt(a){
   const al=0.0015,n=a.cols*a.rows;
   for(let k=0;k<n;k++){
     if(!ref.valid[k]||hits[k]) continue;
-    const c=(1-al)*Math.cos(2*ref.th[k])+al*Math.cos(2*a.th[k]),s=(1-al)*Math.sin(2*ref.th[k])+al*Math.sin(2*a.th[k]);
-    ref.th[k]=0.5*Math.atan2(s,c); ref.coh[k]+=al*(a.coh[k]-ref.coh[k]); ref.en[k]+=al*(a.en[k]-ref.en[k]);
+    ref.m[k]+=al*(a.m[k]-ref.m[k]); ref.e[k]+=al*(a.e[k]-ref.e[k]);
   }
-  if(++adaptN%600===0) save('st_ref',ref);
+  if(++adaptN%600===0) saveRef();
 }
 
 /* ---------- Caméra figée : une vraie caméra a toujours un peu de bruit d'une image à l'autre ---------- */
@@ -407,7 +528,8 @@ function tick(){
     const g=grab();
     if(g){
       got=true;
-      last=analyze(g.g,g.w,g.h,settings.cols,settings.rows);
+      last=analyzeFrame(g.g,g.w,g.h,settings,statOf());
+      paintVis(last);
       checkFrozen(g.g);
       if(mode==='calib'&&cal) calibStep(last);
       else if(running&&mode!=='alarm') detect(last);
@@ -421,6 +543,20 @@ function tick(){
 }
 
 /* ---------- Dessin ---------- */
+const vis=document.createElement('canvas'), vctx=vis.getContext('2d'); let visImg=null;
+function paintVis(a){
+  const w=a.w,h=a.h;
+  if(vis.width!==w||vis.height!==h||!visImg){vis.width=w;vis.height=h;visImg=vctx.createImageData(w,h)}
+  const d=visImg.data,rod=core.rod,st=refFits(a)?statOf():null,cal1=mode==='calib';
+  d.fill(0);
+  for(let i=0,j=0;i<rod.length;i++,j+=4){
+    if(!rod[i])continue;
+    if(st&&st[i]){d[j]=141;d[j+1]=154;d[j+2]=166;d[j+3]=90}
+    else if(cal1||!st){d[j]=255;d[j+1]=210;d[j+2]=63;d[j+3]=230}
+    else{d[j]=255;d[j+1]=40;d[j+2]=30;d[j+3]=255}
+  }
+  vctx.putImageData(visImg,0,0);
+}
 function draw(){
   const W=stage.clientWidth,H=stage.clientHeight,dpr=window.devicePixelRatio||1;
   if(ov.width!==Math.round(W*dpr)||ov.height!==Math.round(H*dpr)){ov.width=Math.round(W*dpr);ov.height=Math.round(H*dpr)}
@@ -431,26 +567,25 @@ function draw(){
   octx.fillStyle='rgba(0,0,0,.5)';
   octx.fillRect(0,0,W,ry);octx.fillRect(0,ry+rh,W,H-ry-rh);octx.fillRect(0,ry,rx,rh);octx.fillRect(rx+rw,ry,W-rx-rw,rh);
   if(last&&!draft){
-    const cols=last.cols,rows=last.rows,cw=rw/cols,ch=rh/rows,L=Math.min(cw,ch)*0.36,useRef=ref&&ref.cols===cols&&ref.rows===rows;
-    octx.lineWidth=2; octx.lineCap='round';
-    for(let j=0;j<rows;j++)for(let i=0;i<cols;i++){
-      const k=j*cols+i,x=rx+(i+.5)*cw,y=ry+(j+.5)*ch;
-      if(useRef&&!ref.valid[k]){octx.fillStyle='rgba(141,154,166,.5)';octx.fillRect(x-1.5,y-1.5,3,3);continue}
-      let col=mode==='calib'?C.sig:C.ok;
-      if(running&&hits&&hits.length===cols*rows){
-        if(hits[k]>=settings.persist){col=C.bad;octx.fillStyle='rgba(239,59,54,.35)';octx.fillRect(rx+i*cw+1,ry+j*ch+1,cw-2,ch-2)}
-        else if(flags[k]) col=C.warn;
-      } else if(!useRef&&mode!=='calib') col='rgba(233,238,242,.55)';
-      const e=last.th[k]+Math.PI/2,dx=Math.cos(e)*L,dy=Math.sin(e)*L;
-      octx.strokeStyle=col; octx.globalAlpha=Math.max(.35,Math.min(1,last.coh[k]*1.6));
-      octx.beginPath();octx.moveTo(x-dx,y-dy);octx.lineTo(x+dx,y+dy);octx.stroke();
+    const cols=last.cols,rows=last.rows,cw=rw/cols,ch=rh/rows;
+    // Cases : rouge = défaut confirmé, orange = défaut en cours de confirmation, gris = case non surveillée
+    if(refFits(last)){
+      for(let j=0;j<rows;j++)for(let i=0;i<cols;i++){
+        const k=j*cols+i;
+        if(!ref.valid[k]){octx.fillStyle='rgba(141,154,166,.25)';octx.fillRect(rx+i*cw+1,ry+j*ch+1,cw-2,ch-2);continue}
+        if(running&&hits&&hits.length===cols*rows){
+          if(hits[k]>=settings.persist){octx.fillStyle='rgba(239,59,54,.35)';octx.fillRect(rx+i*cw+1,ry+j*ch+1,cw-2,ch-2)}
+          else if(flags[k]){octx.strokeStyle=C.warn;octx.lineWidth=2;octx.strokeRect(rx+i*cw+2,ry+j*ch+2,cw-4,ch-4)}
+        }
+      }
     }
-    octx.globalAlpha=1;
+    // Bords droits vus par la caméra : rouge = cigarette couchée possible, gris = pièce fixe connue
+    octx.imageSmoothingEnabled=false; octx.drawImage(vis,rx,ry,rw,rh);
   }
   octx.setLineDash(mode==='draw'?[8,6]:[]); octx.strokeStyle=C.sig; octx.lineWidth=2.5; octx.strokeRect(rx,ry,rw,rh); octx.setLineDash([]);
   if(mode==='draw'&&!draft){
     octx.fillStyle=C.sig; octx.font='700 18px "Barlow Condensed",sans-serif'; octx.textAlign='center';
-    octx.fillText('TRACEZ LA ZONE DE LA TRÉMIE AU DOIGT',W/2,28);
+    octx.fillText('TRACEZ LA ZONE SUR LES CIGARETTES SEULEMENT',W/2,28);
   }
 }
 
@@ -517,11 +652,12 @@ function releaseAwake(){try{if(wl)wl.release()}catch(e){}wl=null}
 
 /* ---------- Surveillance ---------- */
 function startWatch(){
-  if(!ref||ref.cols!==settings.cols||ref.rows!==settings.rows){toast("Calibrez d'abord, avec la trémie normale.");return}
+  presEma=1;moved=false;movedSince=0;
+  if(!refReady()||(last&&!refFits(last))){toast("Calibrez d'abord, avec la trémie normale.");return}
   ensureAudio(); keepAwake(); running=true; hits=null; pauseUntil=0; rearmUntil=Date.now()+2000; mode='ready'; updateUI();
   toast('Surveillance active. Laissez cet écran ouvert.');
 }
-function stopWatch(){running=false;hits=null;pauseUntil=0;blocked=false;blockedSince=0;stillSince=0;releaseAwake();if(ref)save('st_ref',ref);updateUI()}
+function stopWatch(){running=false;hits=null;pauseUntil=0;blocked=false;blockedSince=0;stillSince=0;releaseAwake();saveRef();updateUI()}
 $('#btnGo').onclick=()=>{running?stopWatch():startWatch()};
 $('#btnPause').onclick=()=>{
   if(Date.now()<pauseUntil){pauseUntil=0;toast('Surveillance reprise.')}
@@ -536,15 +672,17 @@ function snapshot(cells){
   x.drawImage(video,0,0,W,H);
   if(roi){
     const rx=roi.x*W,ry=roi.y*H,rw=roi.w*W,rh=roi.h*H; x.strokeStyle=C.sig;x.lineWidth=2;x.strokeRect(rx,ry,rw,rh);
+    if(last&&vis.width){x.imageSmoothingEnabled=false;x.drawImage(vis,rx,ry,rw,rh)}
     if(cells&&last){const cw=rw/last.cols,ch=rh/last.rows;x.strokeStyle=C.bad;x.lineWidth=3;
       cells.forEach(k=>{const i=k%last.cols,j=Math.floor(k/last.cols);x.strokeRect(rx+i*cw,ry+j*ch,cw,ch)})}
   }
   try{return c.toDataURL('image/jpeg',0.55)}catch(e){return ''}
 }
 const KINDS={
-  'Détection':{title:'Cigarette mal positionnée',say:'Attention, cigarette mal positionnée sur la trémie.'},
+  'Détection':{title:'Cigarette renversée',say:'Attention, cigarette renversée sur la trémie.'},
   'Vue bloquée':{title:'Vue de la trémie bloquée',say:'Attention, la caméra ne voit plus la trémie.'},
   'Caméra figée':{title:'Caméra figée',say:'Attention, la caméra est figée. Surveillance interrompue.'},
+  'Caméra déplacée':{title:'Téléphone déplacé',say:'Attention, le téléphone a bougé. Replacez-le puis recalibrez.'},
   'Test':{title:'Test de l’alarme',say:'Test de l’alarme de la trémie.'}
 };
 function histLabel(e){
@@ -577,6 +715,7 @@ function updateUI(){
   else if(mode==='calib'&&cal){s='calib';t='Calibration '+Math.round(cal.n/cal.N*100)+' %'}
   else if(mode==='draw'){s='draw';t='Tracé de la zone'}
   else if(running&&now<pauseUntil){s='pause';const r=Math.ceil((pauseUntil-now)/1000);t='Pause '+Math.floor(r/60)+':'+pad(r%60)}
+  else if(running&&moved){s='blocked';t='Téléphone déplacé'}
   else if(running&&blocked){s='blocked';t='Vue masquée'}
   else if(running){s='watch';t='Surveillance active'}
   else if(stream){s='ready';t=ref?'Prêt':'À calibrer'}
@@ -590,7 +729,7 @@ function updateUI(){
   if(has){
     let n=0;if(hits&&running)for(let k=0;k<hits.length;k++)if(hits[k]>=settings.persist)n++;
     const parts=[fps.toFixed(0)+' img/s'];
-    if(ref&&ref.cols===settings.cols&&ref.rows===settings.rows)parts.push(ref.ok+'/'+(ref.cols*ref.rows)+' cases',"Axe "+ref.edgeDeg+'°');
+    if(refReady()&&(!last||refFits(last)))parts.push(ref.ok+'/'+(ref.cols*ref.rows)+' cases');
     else parts.push('Non calibré');
     if(running)parts.push('Défauts '+n);
     $('#stats').innerHTML=parts.map(p=>'<span>'+p+'</span>').join('');
@@ -600,11 +739,11 @@ setInterval(updateUI,1000);
 
 /* ---------- Réglages ---------- */
 const FIELDS=[
-  {id:'angle',label:"Écart d'angle toléré",min:5,max:40,unit:'°',help:'Plus bas = plus sensible. 15° convient pour commencer.'},
+  {id:'len',label:'Longueur minimale d’un trait',min:3,max:15,unit:' %',help:"Longueur d'un bord droit (en % de la largeur de la zone) pour qu'il compte comme cigarette couchée. Plus bas = plus sensible. Visez environ 3 fois le diamètre d'un bout de cigarette à l'écran.",grid:1},
+  {id:'edge',label:'Sensibilité aux bords',min:10,max:70,unit:' %',help:'Plus bas = voit aussi les bords très pâles (cigarette blanche sur blanc). Montez si des traits rouges apparaissent sans raison.',grid:1},
   {id:'persist',label:'Images de confirmation',min:3,max:30,unit:' img',help:"Le défaut doit durer ce nombre d'images (environ 10 par seconde) avant l'alarme. Filtre les vibrations."},
   {id:'minCells',label:'Cases en défaut pour alarmer',min:1,max:6,unit:'',help:'Montez à 2 si une seule case donne des fausses alarmes.'},
-  {id:'cohDrop',label:'Désordre toléré',min:20,max:80,unit:' %',help:"Perte d'alignement acceptée dans une case (cigarettes croisées)."},
-  {id:'cols',label:'Colonnes de la grille',min:6,max:20,unit:'',help:'Modifier la grille demande une nouvelle calibration.',grid:1},
+  {id:'cols',label:'Colonnes de la grille',min:6,max:20,unit:'',help:'Modifier la grille, la longueur ou la sensibilité demande une nouvelle calibration.',grid:1},
   {id:'rows',label:'Lignes de la grille',min:4,max:14,unit:'',help:'',grid:1},
   {id:'rearm',label:'Réarmement après acquittement',min:3,max:60,unit:' s',help:"Délai avant qu'une nouvelle alarme soit possible."},
   {id:'blockSec',label:'Vue masquée avant alarme',min:3,max:60,unit:' s',help:"Si une main ou un objet cache la trémie plus longtemps que ça, l'alarme sonne."},
@@ -620,12 +759,12 @@ function renderSettings(){
    +(torchSupported()?'<div class="toggle"><span>Lampe de l’iPhone</span><button id="tg_torch" aria-pressed="'+torchOn+'">'+(torchOn?'Allumée':'Éteinte')+'</button></div>':'')
    +'<button id="btnReset">Valeurs par défaut</button>';
   FIELDS.forEach(f=>{const i=$('#s_'+f.id);i.oninput=()=>{settings[f.id]=+i.value;$('#o_'+f.id).textContent=i.value+f.unit;save('st_settings',settings);
-    if(f.grid){hits=null;if(running)stopWatch();if(ref&&(ref.cols!==settings.cols||ref.rows!==settings.rows))toast('Grille modifiée : recalibrez.')}}});
+    if(f.grid){hits=null;if(running)stopWatch();if(ref&&!refReady())toast('Réglage modifié : recalibrez.')}}});
   $('#tg_voice').onclick=()=>{settings.voice=!settings.voice;save('st_settings',settings);renderSettings();if(settings.voice){primeVoice();speak('Annonce vocale activée.')}};
   $('#tg_adapt').onclick=()=>{settings.adapt=!settings.adapt;save('st_settings',settings);renderSettings()};
   if($('#tg_torch'))$('#tg_torch').onclick=async()=>{if(!(await setTorch(!torchOn)))toast('Lampe indisponible.');renderSettings()};
   ['sirene','bip'].forEach(k=>{$('#snd_'+k).onclick=()=>{settings.sound=k;save('st_settings',settings);renderSettings();ensureAudio();startSound();setTimeout(stopSound,1500)}});
-  $('#btnReset').onclick=()=>{const g=settings.cols!==DEF.cols||settings.rows!==DEF.rows;settings=Object.assign({},DEF);save('st_settings',settings);renderSettings();if(g){hits=null;if(running)stopWatch();toast('Grille modifiée : recalibrez.')}};
+  $('#btnReset').onclick=()=>{const g=['cols','rows','len','edge'].some(k=>settings[k]!==DEF[k]);settings=Object.assign({},DEF);save('st_settings',settings);renderSettings();if(g){hits=null;if(running)stopWatch();toast('Réglage modifié : recalibrez.')}};
 }
 $('#btnSet').onclick=()=>{renderSettings();$('#sheetSet').hidden=false};
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>{$('#'+b.dataset.close).hidden=true;updateUI()});
@@ -647,7 +786,9 @@ $('#btnHist').onclick=()=>{renderHist();renderExamples();$('#sheetHist').hidden=
 // Photos fournies avec l'application (dossier exemples/ du dépôt)
 const EXAMPLES=[
   {img:'exemples/renversee-2026-11-02.jpg',titre:'Cigarette renversée',date:'02/11/2026',
-   txt:"Cigarette couchée et pliée au milieu des bouts, sous la chaîne à billes (zone entourée)."}
+   txt:"Cigarette couchée et pliée au milieu des bouts, sous la chaîne à billes (zone entourée)."},
+  {img:'exemples/renversees-2026-11-02-b.jpg',titre:'Cigarettes renversées',date:'02/11/2026',
+   txt:"Plusieurs cigarettes couchées en travers, juste sous la chaîne à billes, au-dessus des bouts bien rangés."}
 ];
 let userEx=load('st_ex',[]);
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
