@@ -111,6 +111,12 @@ input[type=range]{width:100%;accent-color:var(--sig);height:32px}
 .hsum div{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px;text-align:center}
 .hsum b{display:block;font:700 28px/1 var(--f-disp);color:var(--sig);font-variant-numeric:tabular-nums}
 .hsum span{color:var(--mut);font-size:13px}
+.exh{margin:8px 0 0;font:700 20px/1 var(--f-disp);text-transform:uppercase;letter-spacing:.03em;border-top:1px solid var(--line);padding-top:16px}
+.exnote{margin:-8px 0 0;color:var(--mut);font-size:14px}
+.hitem a{display:block}
+.hitem .del{min-height:36px;font-size:13px;margin-top:6px;padding:4px 10px}
+.addex{display:flex;align-items:center;justify-content:center;min-height:52px;border:1px dashed var(--sig);border-radius:6px;color:var(--sig);
+  font:700 16px/1.1 var(--f-disp);letter-spacing:.05em;text-transform:uppercase;cursor:pointer}
 .toggle{display:flex;justify-content:space-between;align-items:center;gap:12px;font-weight:600}
 .toggle button{min-height:44px;min-width:96px;font-size:15px}
 .toggle button[aria-pressed="true"]{background:var(--ok);color:#06150d;border-color:var(--ok)}
@@ -182,6 +188,10 @@ input[type=range]{width:100%;accent-color:var(--sig);height:32px}
     </div>
     <div class="hsum" id="histSum"></div>
     <div class="hist" id="hist"></div>
+    <h3 class="exh">Exemples d'anomalies</h3>
+    <p class="exnote">Photos de référence pour montrer aux collègues ce qui doit déclencher l'alarme.</p>
+    <div class="hist" id="examples"></div>
+    <label class="addex">Ajouter une photo d'exemple<input type="file" id="exFile" accept="image/*" hidden></label>
   </div>
 </section>
 
@@ -631,7 +641,41 @@ function renderHist(){
   if(!hist.length){h.innerHTML='<div class="empty">Aucune alarme enregistrée pour le moment.</div>';return}
   h.innerHTML=hist.map(e=>{const d=new Date(e.t);return '<div class="hitem">'+(e.img?'<img src="'+e.img+'" alt="">':'<div></div>')+'<div><b>'+histLabel(e)+'</b><span>'+fmtD(d)+' · '+fmtT(d)+' · Shift '+e.shift+'</span><span>'+(e.src==='Interruption'?'Écran quitté ou iPhone en veille':e.ack===null?'Non acquittée':'Acquittée en '+e.ack+' s')+'</span></div></div>'}).join('');
 }
-$('#btnHist').onclick=()=>{renderHist();$('#sheetHist').hidden=false;$('#btnClear').textContent='Effacer';};
+$('#btnHist').onclick=()=>{renderHist();renderExamples();$('#sheetHist').hidden=false;$('#btnClear').textContent='Effacer';};
+
+/* ---------- Exemples d'anomalies ---------- */
+// Photos fournies avec l'application (dossier exemples/ du dépôt)
+const EXAMPLES=[
+  {img:'exemples/renversee-2026-11-02.jpg',titre:'Cigarette renversée',date:'02/11/2026',
+   txt:"Cigarette couchée et pliée au milieu des bouts, sous la chaîne à billes (zone entourée)."}
+];
+let userEx=load('st_ex',[]);
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function renderExamples(){
+  const all=EXAMPLES.map(e=>Object.assign({fixe:true},e)).concat(userEx);
+  $('#examples').innerHTML=all.map((e,i)=>'<div class="hitem"><a href="'+esc(e.img)+'" target="_blank" rel="noopener"><img src="'+esc(e.img)+'" alt="'+esc(e.titre)+'" loading="lazy"></a><div><b>'+esc(e.titre)+'</b><span>'+esc(e.date)+'</span><span>'+esc(e.txt||'')+'</span>'
+    +(e.fixe?'':'<button class="del" data-ex="'+(i-EXAMPLES.length)+'">Retirer</button>')+'</div></div>').join('');
+  $('#examples').querySelectorAll('[data-ex]').forEach(b=>b.onclick=function(){
+    if(this.textContent==='Retirer'){this.textContent='Confirmer';return}
+    userEx.splice(+this.dataset.ex,1);save('st_ex',userEx);renderExamples();toast('Exemple retiré.');
+  });
+}
+$('#exFile').onchange=function(){
+  const f=this.files&&this.files[0]; this.value=''; if(!f) return;
+  const url=URL.createObjectURL(f), im=new Image();
+  im.onload=()=>{
+    const s=Math.min(1,640/Math.max(im.width,im.height)),c=document.createElement('canvas');
+    c.width=Math.round(im.width*s);c.height=Math.round(im.height*s);c.getContext('2d').drawImage(im,0,0,c.width,c.height);
+    URL.revokeObjectURL(url);
+    const titre=(prompt("Type d'anomalie ?",'Cigarette renversée')||'').trim()||'Anomalie';
+    const txt=(prompt('Description (facultatif)','')||'').trim();
+    userEx.unshift({img:c.toDataURL('image/jpeg',0.72),titre:titre,date:fmtD(new Date()),txt:txt});
+    if(!save('st_ex',userEx)){userEx.shift();toast('Mémoire pleine : retirez un exemple avant d\'en ajouter.');return}
+    renderExamples();toast('Exemple ajouté.');
+  };
+  im.onerror=()=>{URL.revokeObjectURL(url);toast('Photo illisible.')};
+  im.src=url;
+};
 $('#btnClear').onclick=function(){
   if(this.textContent==='Effacer'){this.textContent="Confirmer l'effacement";return}
   hist=[];save('st_hist',hist);renderHist();this.textContent='Effacer';toast('Historique effacé.');
