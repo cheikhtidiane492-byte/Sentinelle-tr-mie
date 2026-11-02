@@ -61,6 +61,10 @@ video{object-fit:contain}
 .intro li{counter-increment:s;display:grid;grid-template-columns:30px 1fr;gap:10px;align-items:start}
 .intro li::before{content:counter(s);font:700 18px/30px var(--f-disp);text-align:center;background:var(--bad);border-radius:4px;color:#fff}
 .err{color:#ffb3ba!important}
+.zonebar{position:absolute;top:8px;left:8px;right:8px;z-index:5;background:rgba(0,26,77,.92);border:2px solid #fff;border-radius:6px;padding:8px;display:grid;gap:8px}
+.zonebar p{margin:0;font-size:14px;line-height:1.3}
+.zbtns{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+.zbtns button{min-height:44px;font-size:15px;padding-inline:4px}
 .stats{position:absolute;left:8px;bottom:8px;right:8px;display:flex;flex-wrap:wrap;gap:6px;pointer-events:none}
 .stats span{font:600 13px/1 var(--f-mono);background:var(--bg);color:#fff;border:1px solid #fff;padding:6px 8px;border-radius:3px;font-variant-numeric:tabular-nums}
 .banner{position:absolute;top:8px;left:8px;right:8px;background:#fff;color:var(--bg);border:3px solid var(--bad);padding:10px 12px;border-radius:4px;font-weight:600;display:flex;gap:10px;align-items:center;justify-content:space-between}
@@ -157,13 +161,17 @@ input[type=range]{width:100%;accent-color:var(--bad);height:32px}
         <p>L'iPhone filme les bouts des cigarettes dans la trémie et sonne dès qu'une cigarette couchée ou renversée apparaît.</p>
         <ol>
           <li>Fixez l'iPhone face à la trémie, bien stable, sans gêner la machine.</li>
-          <li>Allumez la caméra et tracez au doigt la zone à surveiller : seulement sur les bouts de cigarettes, sans barres métalliques ni bords de la vitre.</li>
+          <li>Allumez la caméra : l'appli trouve seule toutes les surfaces de cigarettes (cases bleues). Touchez <b>Zone</b> pour ajouter ou retirer des cases au doigt.</li>
           <li>Calibrez quand la trémie est normale (cigarettes bien rangées).</li>
           <li>Lancez la surveillance et laissez l'écran ouvert. Conseil : Réglages iPhone › Luminosité et affichage › Verrouillage auto › Jamais, et iPhone branché au chargeur.</li>
         </ol>
         <p id="camErr" class="err" hidden></p>
         <button class="primary" id="btnCam">Allumer la caméra</button>
       </div>
+    </div>
+    <div class="zonebar" id="zonebar" hidden>
+      <p>Touchez ou glissez sur les cases pour <b>ajouter</b> ou <b>retirer</b>. Couvrez tout l'endroit où une cigarette peut tomber ; laissez les barres et la vitre dehors.</p>
+      <div class="zbtns"><button id="zAuto">Auto</button><button id="zAll">Tout</button><button id="zNone">Vider</button><button id="zDone" class="primary">Terminé</button></div>
     </div>
     <div class="banner" id="banner" hidden><span id="bannerTxt"></span><button id="bannerOk">OK</button></div>
     <div class="stats" id="stats" hidden></div>
@@ -226,18 +234,20 @@ const C={ok:css.getPropertyValue('--ok').trim(),warn:'#2563ff',bad:'#ff1a33',sig
 /* ---------- Stockage ---------- */
 function load(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}}
 function save(k,v){try{localStorage.setItem(k,JSON.stringify(v));return true}catch(e){return false}}
-const DEF={len:6,edge:35,persist:8,minCells:1,cols:12,rows:8,rearm:10,volume:90,sound:'sirene',voice:true,adapt:true,blockSec:8,pauseMin:1};
+const DEF={len:4.5,edge:35,persist:8,minCells:1,rearm:10,volume:90,sound:'sirene',voice:true,adapt:true,blockSec:8,pauseMin:1};
 let settings=Object.assign({},DEF,load('st_settings',{}));
-delete settings.angle; delete settings.cohDrop; // anciens réglages (ancienne méthode)
-let roi=load('st_roi',null);
+['angle','cohDrop','cols','rows'].forEach(k=>delete settings[k]); // anciens réglages
+if(settings.len>12)settings.len=DEF.len;
+let zone=load('st_zone',null); // cases surveillées : {cols,rows,z:[0/1...]}
+const CELL=20, PIX=480*270; // taille d'une case et nombre de pixels analysés
 let ref=load('st_ref',null);
 let oldRef=false;
-if(ref&&ref.v!==2){ref=null;oldRef=true;save('st_ref',null)} // calibration de l'ancienne méthode : à refaire
+if(ref&&ref.v!==3){ref=null;oldRef=true;save('st_ref',null)} // calibration de l'ancienne méthode : à refaire
 let hist=load('st_hist',[]);
 
 /* ---------- État ---------- */
 let stream=null, mode='off', running=false;
-let pauseUntil=0, rearmUntil=0, hits=null, flags=null, last=null, cal=null, draft=null, dragStart=null;
+let pauseUntil=0, rearmUntil=0, hits=null, flags=null, last=null, cal=null, paint=null, autoBuf=null;
 let loopT=null, frames=0, fpsT=performance.now(), fps=0, hiddenAt=0;
 let presEma=1, moved=false, movedSince=0;
 let prevG=null, stillSince=0, blockedSince=0, blocked=false, adaptN=0, torchOn=false, awakeWarned=false;
@@ -270,10 +280,9 @@ async function startCamera(){
     prevG=null; stillSince=0; blockedSince=0; blocked=false;
     if(torchOn) setTorch(true);
     $('#intro').hidden=true; $('#stats').hidden=false;
-    if(!roi){roi={x:.1,y:.15,w:.8,h:.7};save('st_roi',roi)}
     mode='ready'; ensureAudio(); updateUI();
-    if(oldRef){oldRef=false;banner('Nouvelle méthode de détection : recalibrez une fois, trémie normale.')}
-    else if(!ref) toast('Tracez la zone de la trémie, puis calibrez.');
+    if(oldRef){oldRef=false;banner('Nouvelle zone sur toute l’image : vérifiez les cases bleues, puis recalibrez une fois, trémie normale.')}
+    else if(!ref) toast('Zone proposée automatiquement. Touchez Zone pour la corriger, puis Calibrer.');
     clearTimeout(loopT); tick();
   }catch(e){
     err.textContent=(e&&e.name==='NotAllowedError')?"Accès à la caméra refusé. Réglages iPhone › Safari › Caméra › Autoriser, puis rechargez la page.":"Impossible d'ouvrir la caméra ("+(e&&e.name||'erreur')+").";
@@ -294,17 +303,12 @@ function contentRect(){
   const W=stage.clientWidth,H=stage.clientHeight,vw=video.videoWidth||16,vh=video.videoHeight||9;
   const s=Math.min(W/vw,H/vh),w=vw*s,h=vh*s;return {x:(W-w)/2,y:(H-h)/2,w:w,h:h};
 }
-function toNorm(e){
-  const b=ov.getBoundingClientRect(),cr=contentRect();
-  return {x:Math.min(1,Math.max(0,(e.clientX-b.left-cr.x)/cr.w)),y:Math.min(1,Math.max(0,(e.clientY-b.top-cr.y)/cr.h))};
-}
 
 /* ---------- Analyse d'image : recherche de « bâtonnets » ----------
    Vue de face, la trémie normale ne montre que des bouts ronds : leurs bords sont courts et courbes.
    Une cigarette couchée ou renversée montre au contraire de longs bords droits.
-   On cherche donc les bords droits plus longs que « len » % de la largeur de la zone.
+   On cherche donc les bords droits plus longs que « len » % de la largeur de l'image.
    Les pièces fixes (barres, chaîne, cadre) sont apprises pendant la calibration et ignorées. */
-const AW=384;
 //@@CORE-START
 const NB=12; // 12 directions, tous les 15°
 const core={w:0,h:0};
@@ -386,22 +390,43 @@ function cellStats(g,w,h,cols,rows,stat){
     const i=y*w+x,k=co[i];m[k]+=g[i];e[k]+=mag[i];c[k]++;
     if(inY&&x>=B&&x<w-B&&rod[i]&&!(stat&&stat[i])){rodN[k]++;tot++}
   }}
+  const all=new Uint16Array(n); // tous les bâtonnets, pièces fixes comprises (pour la zone automatique)
+  for(let i=0;i<w*h;i++) if(rod[i]) all[co[i]]++;
   for(let k=0;k<n;k++){if(c[k]){m[k]/=c[k];e[k]/=c[k]}}
-  return {rodN:rodN,m:m,e:e,cols:cols,rows:rows,w:w,h:h,tot:tot};
+  return {rodN:rodN,all:all,cnt:c,m:m,e:e,cols:cols,rows:rows,w:w,h:h,tot:tot};
+}
+// Zone automatique : garde les cases qui ressemblent à des bouts de cigarettes
+// (claires, très texturées, sans long bord droit), puis nettoie les cases isolées et bouche les trous.
+function autoZone(list){
+  const a0=list[0],cols=a0.cols,rows=a0.rows,n=cols*rows,N=list.length;
+  const m=new Float32Array(n),e=new Float32Array(n),r=new Float32Array(n);
+  for(const a of list)for(let k=0;k<n;k++){m[k]+=a.m[k]/N;e[k]+=a.e[k]/N;r[k]+=(a.cnt[k]?a.all[k]/a.cnt[k]:0)/N}
+  const q=(arr,p)=>{const s=Array.from(arr).sort((x,y)=>x-y);return s[Math.min(s.length-1,Math.floor(p*s.length))]};
+  const mHi=q(m,0.9),bright=[];for(let k=0;k<n;k++)if(m[k]>=0.55*mHi)bright.push(e[k]);
+  const eMed=bright.length?q(bright,0.5):0;
+  let z=new Uint8Array(n);
+  for(let k=0;k<n;k++) z[k]=(m[k]>=0.55*mHi&&e[k]>=0.45*eMed&&r[k]<0.06)?1:0;
+  const nb=(zz,i,j)=>{let c=0;for(let dj=-1;dj<=1;dj++)for(let di=-1;di<=1;di++){if(!di&&!dj)continue;const x=i+di,y=j+dj;if(x>=0&&y>=0&&x<cols&&y<rows&&zz[y*cols+x])c++}return c};
+  for(let pass=0;pass<2;pass++){
+    const z2=new Uint8Array(n);
+    for(let j=0;j<rows;j++)for(let i=0;i<cols;i++){const k=j*cols+i,c=nb(z,i,j);z2[k]=z[k]?(c>=2?1:0):(c>=5?1:0)}
+    z=z2;
+  }
+  return z;
 }
 // Analyse complète d'une image
 function analyzeFrame(g,w,h,o,stat){
   const T=edgeMap(g,w,h,o.edge);
-  const Lpx=Math.max(8,o.len/100*w);
+  const Lpx=Math.max(8,o.len/100*Math.max(w,h));
   rodPass(Lpx);
   const a=cellStats(g,w,h,o.cols,o.rows,stat);a.T=T;a.Lpx=Lpx;return a;
 }
 // Décision par case, à partir de la référence calibrée
-function judge(a,r,o){
+function judge(a,r,o,mask){
   const n=a.cols*a.rows,bad=new Uint8Array(n),chg=new Uint8Array(n),minPx=Math.max(4,Math.round(a.Lpx*0.35));
   let nv=0,nc=0;
   for(let k=0;k<n;k++){
-    if(!r.valid[k])continue; nv++;
+    if(!r.valid[k]||(mask&&!mask[k]))continue; nv++;
     const rm=r.m[k],re=r.e[k];
     // Case très changée (main, objet, ombre, caméra bougée) : ce n'est pas une cigarette couchée
     const changed=a.m[k]<rm*0.6||a.m[k]>rm*1.6||a.e[k]<re*0.4;
@@ -421,7 +446,7 @@ function finishCalib(cal,o){
   const dl=new Uint8Array(w*h),R=3;
   for(let y=0;y<h;y++)for(let x=0;x<w;x++){if(!st[y*w+x])continue;
     for(let yy=Math.max(0,y-R);yy<=Math.min(h-1,y+R);yy++)for(let xx=Math.max(0,x-R);xx<=Math.min(w-1,x+R);xx++)dl[yy*w+xx]=1}
-  const r={v:2,cols:o.cols,rows:o.rows,len:o.len,edge:o.edge,w:w,h:h,m:[],e:[],valid:[],ok:0};
+  const r={v:3,cols:o.cols,rows:o.rows,len:o.len,edge:o.edge,w:w,h:h,m:[],e:[],valid:[],ok:0};
   for(let k=0;k<n;k++){const m=cal.m[k]/N,e=cal.e[k]/N,v=e>3&&m>15;r.m.push(+m.toFixed(1));r.e.push(+e.toFixed(2));r.valid.push(v?1:0);if(v)r.ok++}
   // Repères fixes « solides » (vus dans au moins 60 % des images) : servent à voir si le téléphone a bougé
   const fix=new Uint8Array(w*h);let nf=0,seen=0;const lim2=Math.ceil(N*0.6);
@@ -437,34 +462,51 @@ function presence(fix,w,h){
   return n?ok/n:1;
 }
 //@@CORE-END
+// Toute l'image de la caméra est analysée (environ 480 × 270 pixels), la zone choisit les cases surveillées
 function grab(){
-  const vw=video.videoWidth,vh=video.videoHeight; if(!vw||!vh||!roi) return null;
-  const sx=roi.x*vw,sy=roi.y*vh,sw=Math.max(8,roi.w*vw),sh=Math.max(8,roi.h*vh);
-  const w=AW,h=Math.max(48,Math.min(384,Math.round(AW*sh/sw)));
+  const vw=video.videoWidth,vh=video.videoHeight; if(!vw||!vh) return null;
+  const s=Math.min(1,Math.sqrt(PIX/(vw*vh))),w=Math.round(vw*s),h=Math.round(vh*s);
   if(work.width!==w||work.height!==h){work.width=w;work.height=h}
-  wctx.drawImage(video,sx,sy,sw,sh,0,0,w,h);
+  wctx.drawImage(video,0,0,vw,vh,0,0,w,h);
   const d=wctx.getImageData(0,0,w,h).data, g=new Float32Array(w*h);
   for(let i=0,j=0;i<g.length;i++,j+=4) g[i]=0.299*d[j]+0.587*d[j+1]+0.114*d[j+2];
   return {g:g,w:w,h:h};
 }
-function refFits(a){return refReady()&&ref.w===a.w&&ref.h===a.h}
-function refReady(){return !!ref&&ref.v===2&&ref.cols===settings.cols&&ref.rows===settings.rows&&ref.len===settings.len&&ref.edge===settings.edge}
+function gridOf(w,h){return {cols:Math.max(4,Math.round(w/CELL)),rows:Math.max(4,Math.round(h/CELL))}}
+function refFits(a){return refReady()&&ref.w===a.w&&ref.h===a.h&&ref.cols===a.cols&&ref.rows===a.rows}
+function refReady(){return !!ref&&ref.v===3&&ref.len===settings.len&&ref.edge===settings.edge}
+function zoneFits(a){return !!zone&&zone.cols===a.cols&&zone.rows===a.rows&&zone.z&&zone.z.length===a.cols*a.rows}
+function zoneMask(a){return zoneFits(a)?zone.z:null}
+function zoneCount(){let n=0;if(zone&&zone.z)for(const v of zone.z)n+=v;return n}
+function saveZone(){save('st_zone',zone)}
+// Zone automatique à partir de quelques images
+function startAuto(){autoBuf=[];toast('Recherche des surfaces de cigarettes…',1500)}
+function autoStep(a){
+  autoBuf.push({m:a.m.slice(),e:a.e.slice(),all:a.all.slice(),cnt:a.cnt.slice(),cols:a.cols,rows:a.rows});
+  if(autoBuf.length<8) return;
+  const z=autoZone(autoBuf); autoBuf=null; zone={cols:a.cols,rows:a.rows,z:Array.from(z)}; saveZone(); hits=null;
+  const n=zoneCount();
+  if(n<8){banner("Peu de cigarettes reconnues. Rapprochez l'iPhone de la trémie, éclairez-la, puis Zone › Auto. Vous pouvez aussi peindre les cases au doigt.")}
+  else toast('Zone : '+n+' cases surveillées. Touchez Zone pour corriger.');
+  updateUI();
+}
 
 /* ---------- Calibration ---------- */
 function startCalib(){
   if(!stream) return;
+  if(mode==='draw') zoneDone();
   if(running) stopWatch();
   cal={n:0,N:30,w:0,h:0,cnt:null,m:null,e:null};
   mode='calib'; updateUI();
 }
 function calibStep(a){
   const n=a.cols*a.rows;
-  if(!cal.cnt||cal.w!==a.w||cal.h!==a.h){cal.w=a.w;cal.h=a.h;cal.n=0;cal.cnt=new Uint16Array(a.w*a.h);cal.m=new Float64Array(n);cal.e=new Float64Array(n)}
+  if(!cal.cnt||cal.w!==a.w||cal.h!==a.h||cal.cols!==a.cols){cal.cols=a.cols;cal.w=a.w;cal.h=a.h;cal.n=0;cal.cnt=new Uint16Array(a.w*a.h);cal.m=new Float64Array(n);cal.e=new Float64Array(n)}
   const rod=core.rod;for(let i=0;i<rod.length;i++)if(rod[i])cal.cnt[i]++;
   for(let k=0;k<n;k++){cal.m[k]+=a.m[k];cal.e[k]+=a.e[k]}
   cal.n++;
   if(cal.n>=cal.N){
-    const r=finishCalib(cal,settings); r.at=Date.now();
+    const r=finishCalib(cal,{cols:a.cols,rows:a.rows,len:settings.len,edge:settings.edge}); r.at=Date.now();
     const statArr=r.stat,fixArr=r.fix; r.stat=rleEnc(statArr); r.fix=rleEnc(fixArr); save('st_ref',r); r.statArr=statArr; r.fixArr=fixArr; presEma=1;
     ref=r; cal=null; hits=null; adaptN=0; mode='ready'; updateUI();
     const n2=r.cols*r.rows;
@@ -472,15 +514,15 @@ function calibStep(a){
     else toast('Calibration réussie : '+r.ok+'/'+n2+' cases surveillées.');
   }
 }
-function statOf(){if(!ref||ref.v!==2)return null;if(!ref.statArr)ref.statArr=rleDec(ref.stat||[],ref.w*ref.h);return ref.statArr}
-function fixOf(){if(!ref||ref.v!==2)return null;if(!ref.fixArr)ref.fixArr=rleDec(ref.fix||[],ref.w*ref.h);return ref.fixArr}
+function statOf(){if(!ref||ref.v!==3)return null;if(!ref.statArr)ref.statArr=rleDec(ref.stat||[],ref.w*ref.h);return ref.statArr}
+function fixOf(){if(!ref||ref.v!==3)return null;if(!ref.fixArr)ref.fixArr=rleDec(ref.fix||[],ref.w*ref.h);return ref.fixArr}
 
 /* ---------- Détection ---------- */
 function detect(a){
   if(!refFits(a)) return;
   const n=a.cols*a.rows;
   if(!hits||hits.length!==n){hits=new Uint8Array(n);flags=new Uint8Array(n)}
-  const j=judge(a,ref,settings),conf=[];
+  const j=judge(a,ref,settings,zoneMask(a)),conf=[];
   const nv=j.nv,nf=j.nc;
   for(let k=0;k<n;k++) flags[k]=j.bad[k];
   const now=Date.now();
@@ -504,8 +546,9 @@ function detect(a){
     return;
   }
   blockedSince=0;
+  const zm=zoneMask(a);
   for(let k=0;k<n;k++){
-    if(!ref.valid[k]){hits[k]=0;continue}
+    if(!ref.valid[k]||(zm&&!zm[k])){hits[k]=0;continue}
     hits[k]=flags[k]?Math.min(255,hits[k]+1):(hits[k]>2?hits[k]-2:0);
     if(hits[k]>=settings.persist) conf.push(k);
   }
@@ -541,18 +584,21 @@ function checkFrozen(g){
 function tick(){
   if(!stream) return;
   let got=false;
-  if(video.readyState>=2&&roi&&!draft){
+  if(video.readyState>=2){
     const g=grab();
     if(g){
       got=true;
-      last=analyzeFrame(g.g,g.w,g.h,settings,statOf());
+      const gr=gridOf(g.w,g.h);
+      last=analyzeFrame(g.g,g.w,g.h,{len:settings.len,edge:settings.edge,cols:gr.cols,rows:gr.rows},statOf());
+      if(!zoneFits(last)&&!autoBuf) startAuto(); // pas de zone (ou caméra tournée) : zone automatique
+      if(autoBuf) autoStep(last);
       paintVis(last);
       checkFrozen(g.g);
       if(mode==='calib'&&cal) calibStep(last);
-      else if(running&&mode!=='alarm') detect(last);
+      else if(running&&mode!=='alarm'&&mode!=='draw') detect(last);
     }
   }
-  if(got||!running||draft) tick.lastOk=Date.now();
+  if(got||!running) tick.lastOk=Date.now();
   else if(tick.lastOk&&Date.now()-tick.lastOk>4000&&mode!=='alarm'&&Date.now()>pauseUntil){tick.lastOk=Date.now();triggerAlarm([],'Caméra figée')}
   draw(); frames++;
   const t=performance.now(); if(t-fpsT>1000){fps=frames*1000/(t-fpsT);frames=0;fpsT=t;updateUI()}
@@ -561,61 +607,78 @@ function tick(){
 
 /* ---------- Dessin ---------- */
 const vis=document.createElement('canvas'), vctx=vis.getContext('2d'); let visImg=null;
+// Traits droits vus par la caméra : rouge = cigarette couchée dans la zone, bleu = apprentissage, gris = pièce fixe (en mode Zone)
 function paintVis(a){
   const w=a.w,h=a.h;
   if(vis.width!==w||vis.height!==h||!visImg){vis.width=w;vis.height=h;visImg=vctx.createImageData(w,h)}
-  const d=visImg.data,rod=core.rod,st=refFits(a)?statOf():null,cal1=mode==='calib';
+  const d=visImg.data,rod=core.rod,co=core.cellOf,st=refFits(a)?statOf():null,learn=mode==='calib'||!st,edit=mode==='draw',zm=zoneMask(a);
   d.fill(0);
   for(let i=0,j=0;i<rod.length;i++,j+=4){
     if(!rod[i])continue;
-    if(st&&st[i]){d[j]=141;d[j+1]=154;d[j+2]=166;d[j+3]=90}
-    else if(cal1||!st){d[j]=37;d[j+1]=99;d[j+2]=255;d[j+3]=230}
-    else{d[j]=255;d[j+1]=40;d[j+2]=30;d[j+3]=255}
+    if(st&&st[i]){if(edit){d[j]=190;d[j+1]=200;d[j+2]=215;d[j+3]=150}continue}
+    if(zm&&!zm[co[i]]&&!edit)continue;
+    if(learn){d[j]=37;d[j+1]=99;d[j+2]=255;d[j+3]=230}
+    else{d[j]=255;d[j+1]=26;d[j+2]=51;d[j+3]=255}
   }
   vctx.putImageData(visImg,0,0);
+}
+// Dessine la zone (cases), les défauts et les traits sur un contexte, dans le rectangle x0,y0,W,H de l'image
+function paintZone(x,a,x0,y0,W,H,o){
+  const cols=a.cols,rows=a.rows,cw=W/cols,ch=H/rows,zm=zoneMask(a),edit=o.edit;
+  x.beginPath();
+  for(let j=0;j<rows;j++)for(let i=0;i<cols;i++){if(!zm||!zm[j*cols+i])x.rect(x0+i*cw,y0+j*ch,cw,ch)}
+  x.fillStyle=edit?'rgba(0,26,77,.45)':'rgba(0,26,77,.55)'; x.fill();
+  if(edit&&zm){x.beginPath();for(let k=0;k<zm.length;k++)if(zm[k])x.rect(x0+(k%cols)*cw,y0+Math.floor(k/cols)*ch,cw,ch);x.fillStyle='rgba(37,99,255,.28)';x.fill()}
+  if(edit){x.beginPath();for(let i=1;i<cols;i++){x.moveTo(x0+i*cw,y0);x.lineTo(x0+i*cw,y0+H)}for(let j=1;j<rows;j++){x.moveTo(x0,y0+j*ch);x.lineTo(x0+W,y0+j*ch)}
+    x.strokeStyle='rgba(255,255,255,.3)';x.lineWidth=1;x.stroke()}
+  // Défauts
+  if(o.hits&&o.hits.length===cols*rows){
+    for(let k=0;k<o.hits.length;k++){const i=k%cols,j=Math.floor(k/cols);
+      if(o.hits[k]>=settings.persist){x.fillStyle='rgba(255,26,51,.4)';x.fillRect(x0+i*cw,y0+j*ch,cw,ch)}
+      else if(o.flags&&o.flags[k]){x.strokeStyle='#fff';x.lineWidth=2;x.strokeRect(x0+i*cw+2,y0+j*ch+2,cw-4,ch-4)}}
+  }
+  if(o.cells){x.strokeStyle='#ff1a33';x.lineWidth=3;o.cells.forEach(k=>x.strokeRect(x0+(k%cols)*cw,y0+Math.floor(k/cols)*ch,cw,ch))}
+  if(vis.width){x.imageSmoothingEnabled=false;x.drawImage(vis,x0,y0,W,H)}
+  // Contour de la zone en bleu
+  if(zm){x.beginPath();
+    for(let j=0;j<rows;j++)for(let i=0;i<cols;i++){if(!zm[j*cols+i])continue;const L=x0+i*cw,T=y0+j*ch;
+      if(i===0||!zm[j*cols+i-1]){x.moveTo(L,T);x.lineTo(L,T+ch)}
+      if(i===cols-1||!zm[j*cols+i+1]){x.moveTo(L+cw,T);x.lineTo(L+cw,T+ch)}
+      if(j===0||!zm[(j-1)*cols+i]){x.moveTo(L,T);x.lineTo(L+cw,T)}
+      if(j===rows-1||!zm[(j+1)*cols+i]){x.moveTo(L,T+ch);x.lineTo(L+cw,T+ch)}}
+    x.strokeStyle=C.roi;x.lineWidth=o.lw||3;x.lineCap='round';x.stroke()}
 }
 function draw(){
   const W=stage.clientWidth,H=stage.clientHeight,dpr=window.devicePixelRatio||1;
   if(ov.width!==Math.round(W*dpr)||ov.height!==Math.round(H*dpr)){ov.width=Math.round(W*dpr);ov.height=Math.round(H*dpr)}
   octx.setTransform(dpr,0,0,dpr,0,0); octx.clearRect(0,0,W,H);
-  if(!stream) return;
-  const cr=contentRect(),r=draft||roi; if(!r) return;
-  const rx=cr.x+r.x*cr.w,ry=cr.y+r.y*cr.h,rw=r.w*cr.w,rh=r.h*cr.h;
-  octx.fillStyle='rgba(0,0,0,.5)';
-  octx.fillRect(0,0,W,ry);octx.fillRect(0,ry+rh,W,H-ry-rh);octx.fillRect(0,ry,rx,rh);octx.fillRect(rx+rw,ry,W-rx-rw,rh);
-  if(last&&!draft){
-    const cols=last.cols,rows=last.rows,cw=rw/cols,ch=rh/rows;
-    // Cases : rouge = défaut confirmé, orange = défaut en cours de confirmation, gris = case non surveillée
-    if(refFits(last)){
-      for(let j=0;j<rows;j++)for(let i=0;i<cols;i++){
-        const k=j*cols+i;
-        if(!ref.valid[k]){octx.fillStyle='rgba(141,154,166,.25)';octx.fillRect(rx+i*cw+1,ry+j*ch+1,cw-2,ch-2);continue}
-        if(running&&hits&&hits.length===cols*rows){
-          if(hits[k]>=settings.persist){octx.fillStyle='rgba(239,59,54,.35)';octx.fillRect(rx+i*cw+1,ry+j*ch+1,cw-2,ch-2)}
-          else if(flags[k]){octx.strokeStyle=C.warn;octx.lineWidth=2;octx.strokeRect(rx+i*cw+2,ry+j*ch+2,cw-4,ch-4)}
-        }
-      }
-    }
-    // Bords droits vus par la caméra : rouge = cigarette couchée possible, gris = pièce fixe connue
-    octx.imageSmoothingEnabled=false; octx.drawImage(vis,rx,ry,rw,rh);
-  }
-  octx.setLineDash(mode==='draw'?[8,6]:[]); octx.strokeStyle=C.roi; octx.lineWidth=3.5; octx.strokeRect(rx,ry,rw,rh); octx.setLineDash([]);
-  if(mode==='draw'&&!draft){
-    octx.fillStyle=C.sig; octx.font='700 18px "Barlow Condensed",sans-serif'; octx.textAlign='center';
-    octx.fillText('TRACEZ LA ZONE SUR LES CIGARETTES SEULEMENT',W/2,28);
-  }
+  if(!stream||!last) return;
+  const cr=contentRect(),live=running&&refFits(last);
+  paintZone(octx,last,cr.x,cr.y,cr.w,cr.h,{edit:mode==='draw',hits:live?hits:null,flags:live?flags:null});
 }
 
-/* ---------- Tracé de la zone ---------- */
-ov.addEventListener('pointerdown',e=>{if(mode!=='draw')return;ov.setPointerCapture(e.pointerId);dragStart=toNorm(e);draft={x:dragStart.x,y:dragStart.y,w:0,h:0}});
-ov.addEventListener('pointermove',e=>{if(!dragStart)return;const p=toNorm(e);draft={x:Math.min(p.x,dragStart.x),y:Math.min(p.y,dragStart.y),w:Math.abs(p.x-dragStart.x),h:Math.abs(p.y-dragStart.y)}});
-ov.addEventListener('pointerup',()=>{
-  if(!dragStart)return; dragStart=null;
-  if(draft&&draft.w>0.05&&draft.h>0.05){roi=draft;save('st_roi',roi);ref=null;save('st_ref',null);hits=null;mode='ready';toast('Zone enregistrée. Calibrez maintenant, trémie normale.')}
-  else toast('Zone trop petite, recommencez.');
-  draft=null; updateUI();
+/* ---------- Zone : cases à surveiller, peintes au doigt ---------- */
+function cellAt(e){
+  if(!last) return -1;
+  const b=ov.getBoundingClientRect(),cr=contentRect(),x=(e.clientX-b.left-cr.x)/cr.w,y=(e.clientY-b.top-cr.y)/cr.h;
+  if(x<0||y<0||x>=1||y>=1) return -1;
+  return Math.floor(y*last.rows)*last.cols+Math.floor(x*last.cols);
+}
+function ensureZone(){if(last&&!zoneFits(last)){zone={cols:last.cols,rows:last.rows,z:new Array(last.cols*last.rows).fill(0)}}}
+ov.addEventListener('pointerdown',e=>{
+  if(mode!=='draw')return; const k=cellAt(e); if(k<0)return;
+  ensureZone(); ov.setPointerCapture(e.pointerId); paint=zone.z[k]?0:1; zone.z[k]=paint;
 });
-$('#btnZone').onclick=()=>{if(running)stopWatch();mode=(mode==='draw')?'ready':'draw';updateUI()};
+ov.addEventListener('pointermove',e=>{if(paint===null||mode!=='draw')return;const k=cellAt(e);if(k>=0)zone.z[k]=paint});
+const endPaint=()=>{if(paint===null)return;paint=null;saveZone();hits=null;updateUI()};
+ov.addEventListener('pointerup',endPaint); ov.addEventListener('pointercancel',endPaint);
+function zoneDone(){mode='ready';paint=null;saveZone();hits=null;updateUI();
+  const n=zoneCount();toast(n?'Zone enregistrée : '+n+' cases surveillées.':'Zone vide : rien ne sera surveillé.')}
+$('#btnZone').onclick=()=>{if(mode==='draw'){zoneDone();return}if(mode==='calib')return;mode='draw';updateUI()};
+$('#zAuto').onclick=()=>startAuto();
+$('#zAll').onclick=()=>{ensureZone();if(zone){zone.z.fill(1);saveZone()}};
+$('#zNone').onclick=()=>{ensureZone();if(zone){zone.z.fill(0);saveZone()}};
+$('#zDone').onclick=zoneDone;
 $('#btnCalib').onclick=startCalib;
 
 /* ---------- Son, vibration, écran allumé ---------- */
@@ -671,6 +734,8 @@ function releaseAwake(){try{if(wl)wl.release()}catch(e){}wl=null}
 function startWatch(){
   presEma=1;moved=false;movedSince=0;
   if(!refReady()||(last&&!refFits(last))){toast("Calibrez d'abord, avec la trémie normale.");return}
+  if(!zoneCount()){toast('Zone vide : touchez Zone et choisissez les cases à surveiller.');return}
+  if(mode==='draw') zoneDone();
   ensureAudio(); keepAwake(); running=true; hits=null; pauseUntil=0; rearmUntil=Date.now()+2000; mode='ready'; updateUI();
   toast('Surveillance active. Laissez cet écran ouvert.');
 }
@@ -685,14 +750,9 @@ $('#btnPause').onclick=()=>{
 /* ---------- Alarme ---------- */
 function snapshot(cells){
   const vw=video.videoWidth,vh=video.videoHeight; if(!vw) return '';
-  const W=360,H=Math.round(W*vh/vw),c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d');
+  const W=480,H=Math.round(W*vh/vw),c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d');
   x.drawImage(video,0,0,W,H);
-  if(roi){
-    const rx=roi.x*W,ry=roi.y*H,rw=roi.w*W,rh=roi.h*H; x.strokeStyle=C.roi;x.lineWidth=3;x.strokeRect(rx,ry,rw,rh);
-    if(last&&vis.width){x.imageSmoothingEnabled=false;x.drawImage(vis,rx,ry,rw,rh)}
-    if(cells&&last){const cw=rw/last.cols,ch=rh/last.rows;x.strokeStyle=C.bad;x.lineWidth=3;
-      cells.forEach(k=>{const i=k%last.cols,j=Math.floor(k/last.cols);x.strokeRect(rx+i*cw,ry+j*ch,cw,ch)})}
-  }
+  if(last) paintZone(x,last,0,0,W,H,{cells:cells,lw:2});
   try{return c.toDataURL('image/jpeg',0.55)}catch(e){return ''}
 }
 const KINDS={
@@ -730,7 +790,7 @@ function updateUI(){
   const pill=$('#pill'),now=Date.now();let s='off',t='Caméra éteinte';
   if(mode==='alarm'){s='alarm';t='Alarme'}
   else if(mode==='calib'&&cal){s='calib';t='Calibration '+Math.round(cal.n/cal.N*100)+' %'}
-  else if(mode==='draw'){s='draw';t='Tracé de la zone'}
+  else if(mode==='draw'){s='draw';t='Réglage de la zone'}
   else if(running&&now<pauseUntil){s='pause';const r=Math.ceil((pauseUntil-now)/1000);t='Pause '+Math.floor(r/60)+':'+pad(r%60)}
   else if(running&&moved){s='blocked';t='Téléphone déplacé'}
   else if(running&&blocked){s='blocked';t='Vue masquée'}
@@ -739,15 +799,16 @@ function updateUI(){
   pill.dataset.s=s; pill.textContent=t;
   const has=!!stream;
   $('#btnZone').disabled=!has; $('#btnCalib').disabled=!has; $('#btnGo').disabled=!has; $('#btnPause').disabled=!running;
-  $('#btnZone').textContent=mode==='draw'?'Annuler':'Zone';
+  $('#btnZone').textContent=mode==='draw'?'Terminé':'Zone';
+  $('#zonebar').hidden=mode!=='draw'; if(mode==='draw')$('#banner').hidden=true;
   $('#btnGo').textContent=running?'Arrêter':'Surveiller'; $('#btnGo').classList.toggle('stop',running);
   $('#btnPause').textContent=(running&&now<pauseUntil)?'Reprendre':'Pause '+settings.pauseMin+' min';
   const d=new Date(); $('#sub').textContent='Focke 350 · Ligne LU 44 · Shift '+shiftOf(d);
   if(has){
     let n=0;if(hits&&running)for(let k=0;k<hits.length;k++)if(hits[k]>=settings.persist)n++;
     const parts=[fps.toFixed(0)+' img/s'];
-    if(refReady()&&(!last||refFits(last)))parts.push(ref.ok+'/'+(ref.cols*ref.rows)+' cases');
-    else parts.push('Non calibré');
+    parts.push('Zone '+zoneCount()+' cases');
+    if(!(refReady()&&(!last||refFits(last))))parts.push('Non calibré');
     if(running)parts.push('Défauts '+n);
     $('#stats').innerHTML=parts.map(p=>'<span>'+p+'</span>').join('');
   }
@@ -756,12 +817,10 @@ setInterval(updateUI,1000);
 
 /* ---------- Réglages ---------- */
 const FIELDS=[
-  {id:'len',label:'Longueur minimale d’un trait',min:3,max:15,unit:' %',help:"Longueur d'un bord droit (en % de la largeur de la zone) pour qu'il compte comme cigarette couchée. Plus bas = plus sensible. Visez environ 3 fois le diamètre d'un bout de cigarette à l'écran.",grid:1},
-  {id:'edge',label:'Sensibilité aux bords',min:10,max:70,unit:' %',help:'Plus bas = voit aussi les bords très pâles (cigarette blanche sur blanc). Montez si des traits rouges apparaissent sans raison.',grid:1},
+  {id:'len',label:'Longueur minimale d’un trait',min:2,max:12,step:0.5,unit:' %',help:"Longueur d'un bord droit (en % de la largeur de l'image) pour qu'il compte comme cigarette couchée. Plus bas = plus sensible. Visez environ 2 à 3 fois le diamètre d'un bout de cigarette à l'écran.",grid:1},
+  {id:'edge',label:'Sensibilité aux bords',min:10,max:70,unit:' %',help:'Plus bas = voit aussi les bords très pâles (cigarette blanche sur blanc). Montez si des traits rouges apparaissent sans raison. Modifier la longueur ou la sensibilité demande une nouvelle calibration.',grid:1},
   {id:'persist',label:'Images de confirmation',min:3,max:30,unit:' img',help:"Le défaut doit durer ce nombre d'images (environ 10 par seconde) avant l'alarme. Filtre les vibrations."},
   {id:'minCells',label:'Cases en défaut pour alarmer',min:1,max:6,unit:'',help:'Montez à 2 si une seule case donne des fausses alarmes.'},
-  {id:'cols',label:'Colonnes de la grille',min:6,max:20,unit:'',help:'Modifier la grille, la longueur ou la sensibilité demande une nouvelle calibration.',grid:1},
-  {id:'rows',label:'Lignes de la grille',min:4,max:14,unit:'',help:'',grid:1},
   {id:'rearm',label:'Réarmement après acquittement',min:3,max:60,unit:' s',help:"Délai avant qu'une nouvelle alarme soit possible."},
   {id:'blockSec',label:'Vue masquée avant alarme',min:3,max:60,unit:' s',help:"Si une main ou un objet cache la trémie plus longtemps que ça, l'alarme sonne."},
   {id:'pauseMin',label:'Durée de la pause',min:1,max:10,unit:' min',help:'Pour intervenir sur la machine sans déclencher d’alarme.'},
@@ -769,7 +828,7 @@ const FIELDS=[
 ];
 function renderSettings(){
   const b=$('#setBody');
-  b.innerHTML=FIELDS.map(f=>'<div class="field"><label for="s_'+f.id+'">'+f.label+'<output id="o_'+f.id+'">'+settings[f.id]+f.unit+'</output></label><input type="range" id="s_'+f.id+'" min="'+f.min+'" max="'+f.max+'" step="1" value="'+settings[f.id]+'">'+(f.help?'<small>'+f.help+'</small>':'')+'</div>').join('')
+  b.innerHTML=FIELDS.map(f=>'<div class="field"><label for="s_'+f.id+'">'+f.label+'<output id="o_'+f.id+'">'+settings[f.id]+f.unit+'</output></label><input type="range" id="s_'+f.id+'" min="'+f.min+'" max="'+f.max+'" step="'+(f.step||1)+'" value="'+settings[f.id]+'">'+(f.help?'<small>'+f.help+'</small>':'')+'</div>').join('')
    +'<div class="field"><label>Son de l\'alarme</label><div class="seg"><button id="snd_sirene" aria-pressed="'+(settings.sound==='sirene')+'">Sirène</button><button id="snd_bip" aria-pressed="'+(settings.sound==='bip')+'">Bips</button></div></div>'
    +'<div class="toggle"><span>Annonce vocale</span><button id="tg_voice" aria-pressed="'+settings.voice+'">'+(settings.voice?'Oui':'Non')+'</button></div>'
    +'<div class="toggle"><span>Adaptation à la lumière<br><small style="color:var(--mut);font-weight:400">Suit doucement les changements d’éclairage</small></span><button id="tg_adapt" aria-pressed="'+settings.adapt+'">'+(settings.adapt?'Oui':'Non')+'</button></div>'
@@ -781,7 +840,7 @@ function renderSettings(){
   $('#tg_adapt').onclick=()=>{settings.adapt=!settings.adapt;save('st_settings',settings);renderSettings()};
   if($('#tg_torch'))$('#tg_torch').onclick=async()=>{if(!(await setTorch(!torchOn)))toast('Lampe indisponible.');renderSettings()};
   ['sirene','bip'].forEach(k=>{$('#snd_'+k).onclick=()=>{settings.sound=k;save('st_settings',settings);renderSettings();ensureAudio();startSound();setTimeout(stopSound,1500)}});
-  $('#btnReset').onclick=()=>{const g=['cols','rows','len','edge'].some(k=>settings[k]!==DEF[k]);settings=Object.assign({},DEF);save('st_settings',settings);renderSettings();if(g){hits=null;if(running)stopWatch();toast('Réglage modifié : recalibrez.')}};
+  $('#btnReset').onclick=()=>{const g=['len','edge'].some(k=>settings[k]!==DEF[k]);settings=Object.assign({},DEF);save('st_settings',settings);renderSettings();if(g){hits=null;if(running)stopWatch();toast('Réglage modifié : recalibrez.')}};
 }
 $('#btnSet').onclick=()=>{renderSettings();$('#sheetSet').hidden=false};
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>{$('#'+b.dataset.close).hidden=true;updateUI()});
