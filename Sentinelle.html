@@ -36,7 +36,7 @@ header{display:flex;align-items:center;justify-content:space-between;gap:12px;
 .pill{font:700 15px/1 var(--f-disp);letter-spacing:.08em;text-transform:uppercase;padding:9px 12px;border-radius:4px;
   background:var(--panel);color:var(--mut);border:1px solid var(--line);white-space:nowrap}
 .pill[data-s="watch"]{background:var(--ok);color:#06150d;border-color:var(--ok)}
-.pill[data-s="pause"],.pill[data-s="calib"],.pill[data-s="draw"]{background:var(--warn);color:#1d1300;border-color:var(--warn)}
+.pill[data-s="pause"],.pill[data-s="calib"],.pill[data-s="draw"],.pill[data-s="blocked"]{background:var(--warn);color:#1d1300;border-color:var(--warn)}
 .pill[data-s="alarm"]{background:var(--bad);color:#fff;border-color:var(--bad)}
 .stage{position:relative;background:#000;min-height:0;overflow:hidden}
 video,#overlay{position:absolute;inset:0;width:100%;height:100%}
@@ -56,15 +56,16 @@ video{object-fit:contain}
 .banner button{background:#1d1300;color:var(--warn);border:0;border-radius:3px;padding:8px 10px;font:700 14px var(--f-disp);text-transform:uppercase}
 footer{padding-block:10px;padding-left:max(12px,env(safe-area-inset-left,0px));padding-right:max(12px,env(safe-area-inset-right,0px));
   border-top:1px solid var(--line);display:grid;gap:8px}
-.row{display:grid;gap:8px;grid-template-columns:repeat(3,1fr)}
-.row.small{grid-template-columns:repeat(4,1fr)}
+.row{display:grid;gap:8px;grid-template-columns:repeat(3,minmax(0,1fr))}
+.row.small{grid-template-columns:minmax(0,.9fr) minmax(0,.9fr) minmax(0,1.2fr) minmax(0,1.1fr)}
+.row button{min-width:0;padding-inline:4px}
 button{font:700 17px/1.1 var(--f-disp);letter-spacing:.05em;text-transform:uppercase;color:var(--fg);background:var(--panel);
   border:1px solid var(--line);border-radius:6px;min-height:56px;padding:6px 8px;cursor:pointer}
 button:focus-visible{outline:3px solid var(--sig);outline-offset:2px}
 button:active{transform:translateY(1px)}
 button:disabled{opacity:.4}
-.row.small button{min-height:46px;font-size:14px}
-.go{background:var(--ok);color:#06150d;border-color:var(--ok);font-size:20px}
+.row.small button{min-height:46px;font-size:13px;letter-spacing:.02em}
+.go{background:var(--ok);color:#06150d;border-color:var(--ok);font-size:19px;letter-spacing:.03em}
 .go.stop{background:var(--bad);color:#fff;border-color:var(--bad)}
 .primary{background:var(--sig);color:#1a1500;border-color:var(--sig)}
 @media (orientation:landscape) and (max-height:560px){
@@ -106,6 +107,13 @@ input[type=range]{width:100%;accent-color:var(--sig);height:32px}
 .hitem b{font:700 18px/1.1 var(--f-disp);text-transform:uppercase;display:block}
 .hitem span{color:var(--mut);font-size:14px;display:block;font-variant-numeric:tabular-nums}
 .empty{color:var(--mut);text-align:center;padding:30px 0}
+.hsum{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.hsum div{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px;text-align:center}
+.hsum b{display:block;font:700 28px/1 var(--f-disp);color:var(--sig);font-variant-numeric:tabular-nums}
+.hsum span{color:var(--mut);font-size:13px}
+.toggle{display:flex;justify-content:space-between;align-items:center;gap:12px;font-weight:600}
+.toggle button{min-height:44px;min-width:96px;font-size:15px}
+.toggle button[aria-pressed="true"]{background:var(--ok);color:#06150d;border-color:var(--ok)}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(150px + env(safe-area-inset-bottom,0px));z-index:60;
   background:var(--fg);color:var(--bg);padding:12px 16px;border-radius:6px;font-weight:600;max-width:calc(100% - 32px);text-align:center}
 </style>
@@ -128,7 +136,7 @@ input[type=range]{width:100%;accent-color:var(--sig);height:32px}
           <li>Fixez l'iPhone face à la trémie, bien stable, sans gêner la machine.</li>
           <li>Allumez la caméra et tracez au doigt la zone à surveiller.</li>
           <li>Calibrez quand la trémie est normale (cigarettes bien rangées).</li>
-          <li>Lancez la surveillance et laissez l'écran ouvert.</li>
+          <li>Lancez la surveillance et laissez l'écran ouvert. Conseil : Réglages iPhone › Luminosité et affichage › Verrouillage auto › Jamais, et iPhone branché au chargeur.</li>
         </ol>
         <p id="camErr" class="err" hidden></p>
         <button class="primary" id="btnCam">Allumer la caméra</button>
@@ -172,6 +180,7 @@ input[type=range]{width:100%;accent-color:var(--sig);height:32px}
       <button id="btnCsv">Exporter CSV</button>
       <button id="btnClear">Effacer</button>
     </div>
+    <div class="hsum" id="histSum"></div>
     <div class="hist" id="hist"></div>
   </div>
 </section>
@@ -189,8 +198,8 @@ const C={ok:css.getPropertyValue('--ok').trim(),warn:css.getPropertyValue('--war
 
 /* ---------- Stockage ---------- */
 function load(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}}
-function save(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
-const DEF={angle:15,persist:8,minCells:1,cohDrop:55,cols:12,rows:8,rearm:10,volume:90,sound:'sirene'};
+function save(k,v){try{localStorage.setItem(k,JSON.stringify(v));return true}catch(e){return false}}
+const DEF={angle:15,persist:8,minCells:1,cohDrop:55,cols:12,rows:8,rearm:10,volume:90,sound:'sirene',voice:true,adapt:true,blockSec:8,pauseMin:1};
 let settings=Object.assign({},DEF,load('st_settings',{}));
 let roi=load('st_roi',null);
 let ref=load('st_ref',null);
@@ -200,6 +209,13 @@ let hist=load('st_hist',[]);
 let stream=null, mode='off', running=false;
 let pauseUntil=0, rearmUntil=0, hits=null, flags=null, last=null, cal=null, draft=null, dragStart=null;
 let loopT=null, frames=0, fpsT=performance.now(), fps=0, hiddenAt=0;
+let prevG=null, stillSince=0, blockedSince=0, blocked=false, adaptN=0, torchOn=false, awakeWarned=false;
+const HIST_MAX=30;
+function saveHist(){
+  if(save('st_hist',hist)) return;
+  // Mémoire pleine : on garde les alarmes mais on retire les photos les plus anciennes
+  for(let i=hist.length-1;i>=5;i--){if(hist[i].img){hist[i].img='';if(save('st_hist',hist))return}}
+}
 
 const shiftOf=d=>{const h=d.getHours();return (h>=7&&h<19)?'A':'C'};
 const pad=n=>String(n).padStart(2,'0');
@@ -220,6 +236,8 @@ async function startCamera(){
     if(stream) stream.getTracks().forEach(t=>t.stop());
     stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}}});
     video.srcObject=stream; await video.play().catch(()=>{});
+    prevG=null; stillSince=0; blockedSince=0; blocked=false;
+    if(torchOn) setTorch(true);
     $('#intro').hidden=true; $('#stats').hidden=false;
     if(!roi){roi={x:.1,y:.15,w:.8,h:.7};save('st_roi',roi)}
     mode='ready'; ensureAudio(); updateUI();
@@ -231,6 +249,13 @@ async function startCamera(){
   }
 }
 $('#btnCam').onclick=startCamera;
+function torchSupported(){
+  try{const tr=stream&&stream.getVideoTracks()[0];const c=tr&&tr.getCapabilities&&tr.getCapabilities();return !!(c&&c.torch)}catch(e){return false}
+}
+async function setTorch(on){
+  try{const tr=stream&&stream.getVideoTracks()[0];if(!tr)return false;await tr.applyConstraints({advanced:[{torch:on}]});torchOn=on;return true}
+  catch(e){torchOn=false;return false}
+}
 
 /* ---------- Géométrie ---------- */
 function contentRect(){
@@ -300,7 +325,7 @@ function calibStep(a){
       if(v){ok++;gc+=Math.cos(2*th)*coh;gs+=Math.sin(2*th)*coh}
     }
     r.edgeDeg=+((0.5*Math.atan2(gs,gc)+Math.PI/2)*180/Math.PI%180).toFixed(1);
-    r.ok=ok; r.at=Date.now(); ref=r; save('st_ref',ref); cal=null; hits=null; mode='ready'; updateUI();
+    r.ok=ok; r.at=Date.now(); ref=r; save('st_ref',ref); cal=null; hits=null; adaptN=0; mode='ready'; updateUI();
     if(ok<n*0.3) banner('Seulement '+ok+' cases exploitables sur '+n+'. Rapprochez le téléphone, éclairez la trémie ou réduisez la grille dans Réglages.');
     else toast('Calibration réussie : '+ok+'/'+n+' cases surveillées.');
   }
@@ -312,29 +337,74 @@ function detect(a){
   const n=a.cols*a.rows;
   if(!hits||hits.length!==n){hits=new Uint8Array(n);flags=new Uint8Array(n)}
   const thr=settings.angle,drop=1-settings.cohDrop/100,conf=[];
+  let nv=0,nf=0;
   for(let k=0;k<n;k++){
-    if(!ref.valid[k]){hits[k]=0;flags[k]=0;continue}
+    if(!ref.valid[k]){flags[k]=0;continue}
     const d=angDiff(a.th[k],ref.th[k]);
-    const bad=(a.coh[k]>0.15&&d>thr)||(a.en[k]>ref.en[k]*0.4&&a.coh[k]<ref.coh[k]*drop);
-    flags[k]=bad?1:0;
-    hits[k]=bad?Math.min(255,hits[k]+1):(hits[k]>2?hits[k]-2:0);
-    if(hits[k]>=settings.persist) conf.push(k);
+    // Très sombre (main, objet devant l'objectif) : la case n'a plus de texture
+    const dark=a.en[k]<ref.en[k]*0.25;
+    const bad=dark||(a.coh[k]>0.15&&d>thr)||(a.en[k]>ref.en[k]*0.4&&a.coh[k]<ref.coh[k]*drop);
+    flags[k]=bad?1:0; nv++; if(bad)nf++;
   }
   const now=Date.now();
-  if(conf.length>=settings.minCells&&now>pauseUntil&&now>rearmUntil&&mode!=='alarm') triggerAlarm(conf,'Détection');
+  // Vue masquée : plus de la moitié de la zone change d'un coup = main de l'opérateur ou caméra bougée, pas une cigarette
+  const wasBlocked=blocked;
+  blocked=nv>0&&nf>=nv*0.5;
+  if(blocked){
+    if(!wasBlocked) blockedSince=now;
+    for(let k=0;k<n;k++) hits[k]=hits[k]>2?hits[k]-2:0;
+    if(now-blockedSince>=settings.blockSec*1000&&now>pauseUntil&&now>rearmUntil&&mode!=='alarm') triggerAlarm([],'Vue bloquée');
+    return;
+  }
+  blockedSince=0;
+  for(let k=0;k<n;k++){
+    if(!ref.valid[k]){hits[k]=0;continue}
+    hits[k]=flags[k]?Math.min(255,hits[k]+1):(hits[k]>2?hits[k]-2:0);
+    if(hits[k]>=settings.persist) conf.push(k);
+  }
+  if(conf.length>=settings.minCells&&now>pauseUntil&&now>rearmUntil&&mode!=='alarm'){triggerAlarm(conf,'Détection');return}
+  if(settings.adapt&&nf===0&&now>pauseUntil) adapt(a);
+}
+
+/* ---------- Adaptation lente à la lumière (environ 1 minute), seulement quand tout est normal ---------- */
+function adapt(a){
+  const al=0.0015,n=a.cols*a.rows;
+  for(let k=0;k<n;k++){
+    if(!ref.valid[k]||hits[k]) continue;
+    const c=(1-al)*Math.cos(2*ref.th[k])+al*Math.cos(2*a.th[k]),s=(1-al)*Math.sin(2*ref.th[k])+al*Math.sin(2*a.th[k]);
+    ref.th[k]=0.5*Math.atan2(s,c); ref.coh[k]+=al*(a.coh[k]-ref.coh[k]); ref.en[k]+=al*(a.en[k]-ref.en[k]);
+  }
+  if(++adaptN%600===0) save('st_ref',ref);
+}
+
+/* ---------- Caméra figée : une vraie caméra a toujours un peu de bruit d'une image à l'autre ---------- */
+function checkFrozen(g){
+  const now=Date.now();
+  if(prevG&&prevG.length===g.length){
+    let s=0;for(let i=0;i<g.length;i+=7)s+=Math.abs(g[i]-prevG[i]);
+    const diff=s/(g.length/7);
+    if(diff<0.02){if(!stillSince)stillSince=now}else stillSince=0;
+  }else stillSince=0;
+  prevG=g;
+  if(running&&stillSince&&now-stillSince>4000&&now>pauseUntil&&now>rearmUntil&&mode!=='alarm'){stillSince=0;triggerAlarm([],'Caméra figée')}
 }
 
 /* ---------- Boucle ---------- */
 function tick(){
   if(!stream) return;
+  let got=false;
   if(video.readyState>=2&&roi&&!draft){
     const g=grab();
     if(g){
+      got=true;
       last=analyze(g.g,g.w,g.h,settings.cols,settings.rows);
+      checkFrozen(g.g);
       if(mode==='calib'&&cal) calibStep(last);
       else if(running&&mode!=='alarm') detect(last);
     }
   }
+  if(got||!running||draft) tick.lastOk=Date.now();
+  else if(tick.lastOk&&Date.now()-tick.lastOk>4000&&mode!=='alarm'&&Date.now()>pauseUntil){tick.lastOk=Date.now();triggerAlarm([],'Caméra figée')}
   draw(); frames++;
   const t=performance.now(); if(t-fpsT>1000){fps=frames*1000/(t-fpsT);frames=0;fpsT=t;updateUI()}
   loopT=setTimeout(tick,90);
@@ -387,8 +457,19 @@ $('#btnZone').onclick=()=>{if(running)stopWatch();mode=(mode==='draw')?'ready':'
 $('#btnCalib').onclick=startCalib;
 
 /* ---------- Son, vibration, écran allumé ---------- */
-let ac=null,osc=null,gain=null,sndT=null,vibT=null,wl=null;
+let ac=null,osc=null,gain=null,sndT=null,vibT=null,wl=null,voiceT=null,voiceReady=false;
+function frVoice(){try{const v=speechSynthesis.getVoices();return v.find(x=>/^fr[-_]FR/i.test(x.lang))||v.find(x=>/^fr/i.test(x.lang))||null}catch(e){return null}}
+function speak(t){
+  if(!settings.voice||!('speechSynthesis' in window)) return;
+  try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.lang='fr-FR';const v=frVoice();if(v)u.voice=v;u.rate=1;u.volume=1;speechSynthesis.speak(u)}catch(e){}
+}
+function primeVoice(){
+  // iOS n'autorise la voix qu'après un toucher : on la « déverrouille » avec une phrase vide
+  if(voiceReady||!('speechSynthesis' in window)) return;
+  try{const u=new SpeechSynthesisUtterance(' ');u.volume=0;speechSynthesis.speak(u);voiceReady=true}catch(e){}
+}
 function ensureAudio(){
+  primeVoice();
   try{if(navigator.audioSession)navigator.audioSession.type='playback'}catch(e){}
   try{
     if(!ac){const AC=window.AudioContext||window.webkitAudioContext;ac=new AC()}
@@ -396,7 +477,7 @@ function ensureAudio(){
     const b=ac.createBuffer(1,1,22050),s=ac.createBufferSource();s.buffer=b;s.connect(ac.destination);s.start(0);
   }catch(e){}
 }
-function startSound(){
+function startSound(msg){
   stopSound(); if(!ac) return;
   try{
     if(ac.state==='suspended')ac.resume();
@@ -414,9 +495,14 @@ function startSound(){
     osc.start();
   }catch(e){}
   if(navigator.vibrate){navigator.vibrate([400,150,400]);vibT=setInterval(()=>navigator.vibrate([400,150,400]),1200)}
+  if(msg){speak(msg);voiceT=setInterval(()=>speak(msg),8000)}
 }
-function stopSound(){clearInterval(sndT);clearInterval(vibT);sndT=vibT=null;try{if(osc)osc.stop()}catch(e){}osc=null;if(navigator.vibrate)navigator.vibrate(0)}
-async function keepAwake(){try{if('wakeLock' in navigator&&!wl){wl=await navigator.wakeLock.request('screen');wl.addEventListener('release',()=>{wl=null})}}catch(e){}}
+function stopSound(){clearInterval(sndT);clearInterval(vibT);clearInterval(voiceT);sndT=vibT=voiceT=null;try{if('speechSynthesis' in window)speechSynthesis.cancel()}catch(e){}try{if(osc)osc.stop()}catch(e){}osc=null;if(navigator.vibrate)navigator.vibrate(0)}
+async function keepAwake(){
+  let ok=!!wl;
+  try{if('wakeLock' in navigator&&!wl){wl=await navigator.wakeLock.request('screen');wl.addEventListener('release',()=>{wl=null});ok=true}}catch(e){}
+  if(!ok&&!awakeWarned){awakeWarned=true;banner("Cet iPhone peut se mettre en veille et couper la surveillance. Réglages › Luminosité et affichage › Verrouillage auto › Jamais.")}
+}
 function releaseAwake(){try{if(wl)wl.release()}catch(e){}wl=null}
 
 /* ---------- Surveillance ---------- */
@@ -425,37 +511,52 @@ function startWatch(){
   ensureAudio(); keepAwake(); running=true; hits=null; pauseUntil=0; rearmUntil=Date.now()+2000; mode='ready'; updateUI();
   toast('Surveillance active. Laissez cet écran ouvert.');
 }
-function stopWatch(){running=false;hits=null;pauseUntil=0;releaseAwake();updateUI()}
+function stopWatch(){running=false;hits=null;pauseUntil=0;blocked=false;blockedSince=0;stillSince=0;releaseAwake();if(ref)save('st_ref',ref);updateUI()}
 $('#btnGo').onclick=()=>{running?stopWatch():startWatch()};
 $('#btnPause').onclick=()=>{
   if(Date.now()<pauseUntil){pauseUntil=0;toast('Surveillance reprise.')}
-  else{pauseUntil=Date.now()+60000;if(hits)hits.fill(0);toast('Pause 1 minute pour intervention.')}
+  else{pauseUntil=Date.now()+settings.pauseMin*60000;if(hits)hits.fill(0);blockedSince=0;stillSince=0;toast('Pause '+settings.pauseMin+' min pour intervention.')}
   updateUI();
 };
 
 /* ---------- Alarme ---------- */
 function snapshot(cells){
   const vw=video.videoWidth,vh=video.videoHeight; if(!vw) return '';
-  const W=480,H=Math.round(W*vh/vw),c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d');
+  const W=360,H=Math.round(W*vh/vw),c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d');
   x.drawImage(video,0,0,W,H);
   if(roi){
     const rx=roi.x*W,ry=roi.y*H,rw=roi.w*W,rh=roi.h*H; x.strokeStyle=C.sig;x.lineWidth=2;x.strokeRect(rx,ry,rw,rh);
     if(cells&&last){const cw=rw/last.cols,ch=rh/last.rows;x.strokeStyle=C.bad;x.lineWidth=3;
       cells.forEach(k=>{const i=k%last.cols,j=Math.floor(k/last.cols);x.strokeRect(rx+i*cw,ry+j*ch,cw,ch)})}
   }
-  try{return c.toDataURL('image/jpeg',0.6)}catch(e){return ''}
+  try{return c.toDataURL('image/jpeg',0.55)}catch(e){return ''}
+}
+const KINDS={
+  'Détection':{title:'Cigarette mal positionnée',say:'Attention, cigarette mal positionnée sur la trémie.'},
+  'Vue bloquée':{title:'Vue de la trémie bloquée',say:'Attention, la caméra ne voit plus la trémie.'},
+  'Caméra figée':{title:'Caméra figée',say:'Attention, la caméra est figée. Surveillance interrompue.'},
+  'Test':{title:'Test de l’alarme',say:'Test de l’alarme de la trémie.'}
+};
+function histLabel(e){
+  if(e.src==='Détection') return e.cells+' case'+(e.cells>1?'s':'')+' en défaut';
+  if(e.src==='Test') return 'Test alarme';
+  if(e.src==='Interruption') return 'Surveillance coupée '+e.secs+' s';
+  return e.src;
 }
 function triggerAlarm(cells,src){
-  mode='alarm'; const d=new Date(), img=snapshot(cells);
+  mode='alarm'; const d=new Date(), img=snapshot(cells), k=KINDS[src]||KINDS['Détection'];
+  $('#alarmTitle').textContent=k.title;
   $('#alarmImg').src=img||''; $('#alarmImg').hidden=!img;
-  $('#alarmInfo').textContent=fmtT(d)+' · Shift '+shiftOf(d)+' · '+(cells.length?cells.length+' case'+(cells.length>1?'s':'')+' en défaut':'Test');
-  $('#alarm').hidden=false; startSound();
-  hist.unshift({t:d.getTime(),shift:shiftOf(d),cells:cells.length,src:src,img:img,ack:null}); hist=hist.slice(0,20); save('st_hist',hist); renderHist(); updateUI();
+  $('#alarmInfo').textContent=fmtT(d)+' · Shift '+shiftOf(d)+' · '+(src==='Détection'?cells.length+' case'+(cells.length>1?'s':'')+' en défaut':src);
+  $('#alarm').hidden=false; startSound(k.say);
+  hist.unshift({t:d.getTime(),shift:shiftOf(d),cells:cells.length,src:src,img:img,ack:null}); hist=hist.slice(0,HIST_MAX); saveHist(); renderHist(); updateUI();
 }
 $('#btnAck').onclick=()=>{
   stopSound(); $('#alarm').hidden=true;
-  if(hist[0]&&hist[0].ack===null){hist[0].ack=Math.round((Date.now()-hist[0].t)/1000);save('st_hist',hist);renderHist()}
-  if(hits)hits.fill(0); rearmUntil=Date.now()+settings.rearm*1000; mode=stream?'ready':'off'; updateUI();
+  const src=hist[0]&&hist[0].src;
+  if(hist[0]&&hist[0].ack===null){hist[0].ack=Math.round((Date.now()-hist[0].t)/1000);saveHist();renderHist()}
+  if(hits)hits.fill(0); blockedSince=0; stillSince=0; rearmUntil=Date.now()+settings.rearm*1000; mode=stream?'ready':'off'; updateUI();
+  if(src==='Caméra figée') startCamera(); // relance la caméra
 };
 $('#btnTest').onclick=()=>{ensureAudio();triggerAlarm([],'Test')};
 
@@ -466,6 +567,7 @@ function updateUI(){
   else if(mode==='calib'&&cal){s='calib';t='Calibration '+Math.round(cal.n/cal.N*100)+' %'}
   else if(mode==='draw'){s='draw';t='Tracé de la zone'}
   else if(running&&now<pauseUntil){s='pause';const r=Math.ceil((pauseUntil-now)/1000);t='Pause '+Math.floor(r/60)+':'+pad(r%60)}
+  else if(running&&blocked){s='blocked';t='Vue masquée'}
   else if(running){s='watch';t='Surveillance active'}
   else if(stream){s='ready';t=ref?'Prêt':'À calibrer'}
   pill.dataset.s=s; pill.textContent=t;
@@ -473,7 +575,7 @@ function updateUI(){
   $('#btnZone').disabled=!has; $('#btnCalib').disabled=!has; $('#btnGo').disabled=!has; $('#btnPause').disabled=!running;
   $('#btnZone').textContent=mode==='draw'?'Annuler':'Zone';
   $('#btnGo').textContent=running?'Arrêter':'Surveiller'; $('#btnGo').classList.toggle('stop',running);
-  $('#btnPause').textContent=(running&&now<pauseUntil)?'Reprendre':'Pause 1 min';
+  $('#btnPause').textContent=(running&&now<pauseUntil)?'Reprendre':'Pause '+settings.pauseMin+' min';
   const d=new Date(); $('#sub').textContent='Focke 350 · Ligne LU 44 · Shift '+shiftOf(d);
   if(has){
     let n=0;if(hits&&running)for(let k=0;k<hits.length;k++)if(hits[k]>=settings.persist)n++;
@@ -495,15 +597,23 @@ const FIELDS=[
   {id:'cols',label:'Colonnes de la grille',min:6,max:20,unit:'',help:'Modifier la grille demande une nouvelle calibration.',grid:1},
   {id:'rows',label:'Lignes de la grille',min:4,max:14,unit:'',help:'',grid:1},
   {id:'rearm',label:'Réarmement après acquittement',min:3,max:60,unit:' s',help:"Délai avant qu'une nouvelle alarme soit possible."},
+  {id:'blockSec',label:'Vue masquée avant alarme',min:3,max:60,unit:' s',help:"Si une main ou un objet cache la trémie plus longtemps que ça, l'alarme sonne."},
+  {id:'pauseMin',label:'Durée de la pause',min:1,max:10,unit:' min',help:'Pour intervenir sur la machine sans déclencher d’alarme.'},
   {id:'volume',label:'Volume',min:20,max:100,unit:' %',help:''}
 ];
 function renderSettings(){
   const b=$('#setBody');
   b.innerHTML=FIELDS.map(f=>'<div class="field"><label for="s_'+f.id+'">'+f.label+'<output id="o_'+f.id+'">'+settings[f.id]+f.unit+'</output></label><input type="range" id="s_'+f.id+'" min="'+f.min+'" max="'+f.max+'" step="1" value="'+settings[f.id]+'">'+(f.help?'<small>'+f.help+'</small>':'')+'</div>').join('')
    +'<div class="field"><label>Son de l\'alarme</label><div class="seg"><button id="snd_sirene" aria-pressed="'+(settings.sound==='sirene')+'">Sirène</button><button id="snd_bip" aria-pressed="'+(settings.sound==='bip')+'">Bips</button></div></div>'
+   +'<div class="toggle"><span>Annonce vocale</span><button id="tg_voice" aria-pressed="'+settings.voice+'">'+(settings.voice?'Oui':'Non')+'</button></div>'
+   +'<div class="toggle"><span>Adaptation à la lumière<br><small style="color:var(--mut);font-weight:400">Suit doucement les changements d’éclairage</small></span><button id="tg_adapt" aria-pressed="'+settings.adapt+'">'+(settings.adapt?'Oui':'Non')+'</button></div>'
+   +(torchSupported()?'<div class="toggle"><span>Lampe de l’iPhone</span><button id="tg_torch" aria-pressed="'+torchOn+'">'+(torchOn?'Allumée':'Éteinte')+'</button></div>':'')
    +'<button id="btnReset">Valeurs par défaut</button>';
   FIELDS.forEach(f=>{const i=$('#s_'+f.id);i.oninput=()=>{settings[f.id]=+i.value;$('#o_'+f.id).textContent=i.value+f.unit;save('st_settings',settings);
     if(f.grid){hits=null;if(running)stopWatch();if(ref&&(ref.cols!==settings.cols||ref.rows!==settings.rows))toast('Grille modifiée : recalibrez.')}}});
+  $('#tg_voice').onclick=()=>{settings.voice=!settings.voice;save('st_settings',settings);renderSettings();if(settings.voice){primeVoice();speak('Annonce vocale activée.')}};
+  $('#tg_adapt').onclick=()=>{settings.adapt=!settings.adapt;save('st_settings',settings);renderSettings()};
+  if($('#tg_torch'))$('#tg_torch').onclick=async()=>{if(!(await setTorch(!torchOn)))toast('Lampe indisponible.');renderSettings()};
   ['sirene','bip'].forEach(k=>{$('#snd_'+k).onclick=()=>{settings.sound=k;save('st_settings',settings);renderSettings();ensureAudio();startSound();setTimeout(stopSound,1500)}});
   $('#btnReset').onclick=()=>{const g=settings.cols!==DEF.cols||settings.rows!==DEF.rows;settings=Object.assign({},DEF);save('st_settings',settings);renderSettings();if(g){hits=null;if(running)stopWatch();toast('Grille modifiée : recalibrez.')}};
 }
@@ -512,9 +622,14 @@ document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>{$('#'+b.data
 
 /* ---------- Historique ---------- */
 function renderHist(){
-  const h=$('#hist');
+  const h=$('#hist'),now=new Date(),since=now.getTime()-12*3600e3,cur=shiftOf(now);
+  const real=hist.filter(e=>e.src==='Détection'&&e.t>=since&&e.shift===cur);
+  const acks=real.filter(e=>e.ack!==null).map(e=>e.ack);
+  $('#histSum').innerHTML='<div><b>'+real.length+'</b><span>Défauts shift '+cur+'</span></div>'
+    +'<div><b>'+hist.filter(e=>e.src!=='Détection'&&e.src!=='Test'&&e.t>=since).length+'</b><span>Alertes caméra</span></div>'
+    +'<div><b>'+(acks.length?Math.round(acks.reduce((a,b)=>a+b,0)/acks.length)+' s':'–')+'</b><span>Réaction moy.</span></div>';
   if(!hist.length){h.innerHTML='<div class="empty">Aucune alarme enregistrée pour le moment.</div>';return}
-  h.innerHTML=hist.map(e=>{const d=new Date(e.t);return '<div class="hitem">'+(e.img?'<img src="'+e.img+'" alt="">':'<div></div>')+'<div><b>'+(e.src==='Test'?'Test alarme':e.cells+' case'+(e.cells>1?'s':'')+' en défaut')+'</b><span>'+fmtD(d)+' · '+fmtT(d)+' · Shift '+e.shift+'</span><span>'+(e.ack===null?'Non acquittée':'Acquittée en '+e.ack+' s')+'</span></div></div>'}).join('');
+  h.innerHTML=hist.map(e=>{const d=new Date(e.t);return '<div class="hitem">'+(e.img?'<img src="'+e.img+'" alt="">':'<div></div>')+'<div><b>'+histLabel(e)+'</b><span>'+fmtD(d)+' · '+fmtT(d)+' · Shift '+e.shift+'</span><span>'+(e.src==='Interruption'?'Écran quitté ou iPhone en veille':e.ack===null?'Non acquittée':'Acquittée en '+e.ack+' s')+'</span></div></div>'}).join('');
 }
 $('#btnHist').onclick=()=>{renderHist();$('#sheetHist').hidden=false;$('#btnClear').textContent='Effacer';};
 $('#btnClear').onclick=function(){
@@ -533,7 +648,10 @@ $('#btnCsv').onclick=()=>{
 document.addEventListener('visibilitychange',async()=>{
   if(document.visibilityState==='hidden'){if(running)hiddenAt=Date.now();return}
   if(stream){const tr=stream.getVideoTracks()[0];if(!tr||tr.readyState==='ended')await startCamera();else video.play().catch(()=>{})}
-  if(running){keepAwake();ensureAudio();if(hiddenAt){const s=Math.round((Date.now()-hiddenAt)/1000);banner("Surveillance interrompue "+s+" s pendant que l'écran était quitté. Elle a repris.");hiddenAt=0}}
+  prevG=null; stillSince=0; tick.lastOk=Date.now();
+  if(running){keepAwake();ensureAudio();if(hiddenAt){const s=Math.round((Date.now()-hiddenAt)/1000);banner("Surveillance interrompue "+s+" s pendant que l'écran était quitté. Elle a repris.");
+    if(s>=3){const d=new Date(hiddenAt);hist.unshift({t:hiddenAt,shift:shiftOf(d),cells:0,src:'Interruption',secs:s,img:'',ack:null});hist=hist.slice(0,HIST_MAX);saveHist();renderHist()}
+    hiddenAt=0}}
 });
 window.addEventListener('resize',draw);
 
